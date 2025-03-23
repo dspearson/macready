@@ -1,13 +1,140 @@
+use deadpool_postgres::{Manager, Pool, PoolConfig, RecyclingMethod};
 use log::{debug, error};
 use native_tls::TlsConnector;
 use postgres_native_tls::MakeTlsConnector;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
 use tokio_postgres::{Client, NoTls};
 
 use crate::error::{AgentError, Result};
+
+/// A PostgreSQL connection pool
+pub struct PgPool {
+    /// The underlying deadpool connection pool
+    pool: Pool,
+
+    /// Configuration used to create this pool
+    config: PgConfig,
+}
+
+impl PgPool {
+    /// Create a new connection pool
+    pub async fn new(config: &PgConfig) -> Result<Self> {
+        let pg_config = tokio_postgres::Config::new()
+            .user(&config.username)
+            .password(&config.password)
+            .dbname(&config.database)
+            .connect_timeout(Duration::from_secs(config.connect_timeout));
+
+        // Add all hosts
+        for host in &config.hosts {
+            let parts: Vec<&str> = host.split(':').collect();
+            if parts.len() == 1 {
+                pg_config.host(host);
+            } else if parts.len() == 2 {
+                if let Ok(port) = parts[1].parse::<u16>() {
+                    pg_config.host(parts[0]).port(port);
+                } else {
+                    pg_config.host(host);
+                }
+            } else {
+                pg_config.host(host);
+            }
+        }
+
+        // Create the manager based on SSL mode
+        let manager = match config.ssl_mode {
+            SslMode::Disable => {
+                Manager::new(pg_config, NoTls)
+            },
+            _ => {
+                // For the other SSL modes, we need to build a TLS connector
+                let connector = build_rustls_connector(config)?;
+                Manager::new(pg_config, connector)
+            }
+        };
+
+        // Configure the pool
+        let pool_config = PoolConfig::new(16); // Default max size, adjust as needed
+
+        // Create the pool
+        let pool = Pool::new(manager, pool_config);
+
+        // Test the connection to ensure it works
+        let client = pool.get().await
+            .map_err(|e| AgentError::Connection(format!("Failed to connect to database: {}", e)))?;
+
+        client.execute("SELECT 1", &[]).await
+            .map_err(|e| AgentError::Database(e))?;
+
+        Ok(Self {
+            pool,
+            config: config.clone(),
+        })
+    }
+
+    /// Get a client from the pool
+    pub async fn get(&self) -> Result<deadpool_postgres::Client> {
+        self.pool.get().await
+            .map_err(|e| AgentError::Connection(format!("Failed to get client from pool: {}", e)))
+    }
+
+    /// Get the pool configuration
+    pub fn config(&self) -> &PgConfig {
+        &self.config
+    }
+}
+
+// Helper function to build a rustls connector based on SSL mode
+fn build_rustls_connector(config: &PgConfig) -> Result<tokio_postgres_rustls::MakeRustlsConnect> {
+    use rustls::ClientConfig;
+    use std::sync::Arc;
+
+    let mut client_config = ClientConfig::builder()
+        .with_root_certificates(root_certs()?)
+        .with_no_client_auth();
+
+    match config.ssl_mode {
+        SslMode::Require => {
+            // Skip verification of certificate but still use TLS
+            client_config.dangerous().set_certificate_verifier(Arc::new(
+                rustls::client::danger::ServerCertVerifier::danger_accept_invalid_certs()
+            ));
+        },
+        SslMode::VerifyCa => {
+            // Verify certificate but not hostname
+            // In Rustls, we use the same root certificate store but need to adjust server name
+            // This would need a custom verifier implementation, which is complex
+            // For now, we'll just go with the default which verifies both
+        },
+        SslMode::VerifyFull => {
+            // Full verification (default)
+        },
+        SslMode::Disable => {
+            // Shouldn't get here
+            return Err(AgentError::Connection("Invalid SSL mode configuration".to_string()));
+        }
+    }
+
+    Ok(tokio_postgres_rustls::MakeRustlsConnect::new(client_config))
+}
+
+// Load root certificates from the system
+fn root_certs() -> Result<rustls::RootCertStore> {
+    let mut root_store = rustls::RootCertStore::empty();
+
+    // Load native certificates
+    let native_certs = rustls_native_certs::load_native_certs()
+        .map_err(|e| AgentError::Connection(format!("Failed to load native certificates: {}", e)))?;
+
+    for cert in native_certs {
+        root_store.add(cert)
+            .map_err(|e| AgentError::Connection(format!("Failed to add certificate: {}", e)))?;
+    }
+
+    Ok(root_store)
+}
 
 /// SSL mode for PostgreSQL connections
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,20 +315,18 @@ async fn connect_with_tls(config: &PgConfig) -> Result<Arc<Client>> {
     Ok(client_arc)
 }
 
-/// Build a TLS connector based on the configuration
+// In src/connection/postgres.rs:
 fn build_tls_connector(config: &PgConfig) -> Result<TlsConnector> {
     let mut tls_builder = TlsConnector::builder();
 
     match config.ssl_mode {
         SslMode::Require => {
             // Don't verify certificates
-            let tb = tls_builder.danger_accept_invalid_certs(true);
-            tls_builder = tb;
+            tls_builder.danger_accept_invalid_certs(true);
         },
         SslMode::VerifyCa => {
             // Verify CA but not hostname
-            let tb = tls_builder.danger_accept_invalid_hostnames(true);
-            tls_builder = tb;
+            tls_builder.danger_accept_invalid_hostnames(true);
         },
         SslMode::VerifyFull => {
             // Full verification (default)

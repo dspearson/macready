@@ -60,3 +60,9 @@ impl From<ProcessError> for crate::error::AgentError {
         crate::error::AgentError::Collection(err.to_string())
     }
 }
+
+impl From<crate::error::AgentError> for ProcessError {
+    fn from(err: crate::error::AgentError) -> Self {
+        ProcessError::Other(err.to_string())
+    }
+}

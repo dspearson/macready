@@ -8,6 +8,7 @@ use tokio_postgres::{Client, Statement};
 
 use crate::collector::MetricPoint;
 use crate::connection::postgres::{establish_connection, PgConfig};
+use crate::connection::postgres::PgPool;
 use crate::entity::Entity;
 use crate::error::{AgentError, Result};
 use crate::retry::{execute_with_retry, RetryConfig};
@@ -36,6 +37,12 @@ pub struct PostgresStorageConfig {
 
     /// Custom type mapping for entity and metric fields
     pub type_mappings: HashMap<String, String>,
+
+    /// Database connection pool size
+    pub pool_size: usize,
+
+    /// Database connection pool recycling method
+    pub pool_recycling: deadpool_postgres::RecyclingMethod,
 }
 
 impl Default for PostgresStorageConfig {
@@ -48,6 +55,8 @@ impl Default for PostgresStorageConfig {
             batch_size: 1000,
             create_tables: true,
             type_mappings: HashMap::new(),
+            pool_size: 16,
+            pool_recycling: deadpool_postgres::RecyclingMethod::Fast,
         }
     }
 }
@@ -107,6 +116,18 @@ impl PostgresStorageConfigBuilder {
         self
     }
 
+    /// Set the pool size
+    pub fn pool_size(mut self, size: usize) -> Self {
+        self.config.pool_size = size;
+        self
+    }
+
+    /// Set the pool recycling method
+    pub fn pool_recycling(mut self, recycling: deadpool_postgres::RecyclingMethod) -> Self {
+        self.config.pool_recycling = recycling;
+        self
+    }
+
     /// Build the configuration
     pub fn build(self) -> PostgresStorageConfig {
         self.config
@@ -142,6 +163,9 @@ where
     M: MetricPoint<EntityType = E>,
     E: Entity,
 {
+    /// Connection pool
+    pool: PgPool,
+
     /// Client connection
     client: Arc<Client>,
 
@@ -160,6 +184,12 @@ where
     /// Phantom data for generics
     _metric_type: PhantomData<M>,
     _entity_type: PhantomData<E>,
+
+    /// Database connection pool size
+    pub pool_size: usize,
+
+    /// Database connection pool recycling method
+    pub pool_recycling: deadpool_postgres::RecyclingMethod,
 }
 
 impl<M, E> PostgresStorage<M, E>
@@ -169,7 +199,11 @@ where
 {
     /// Create a new PostgreSQL storage
     pub async fn new(config: PostgresStorageConfig, name: impl Into<String>) -> Result<Self> {
-        let client = establish_connection(&config.connection).await?;
+        // Create the connection pool
+        let pool = PgPool::new(&config.connection).await?;
+
+        // Get a client for initialization and statements
+        let client = Arc::new(pool.get().await?.into_inner());
 
         // Initialize schema
         let schema = Self::initialize_schema(&client, &config).await?;
@@ -183,6 +217,7 @@ where
         let statements = Self::prepare_statements(&client, &config, &schema).await?;
 
         Ok(Self {
+            pool,
             client,
             config,
             name: name.into(),
@@ -564,7 +599,11 @@ where
     type MetricType = M;
     type EntityType = E;
 
+
     async fn store_metric(&self, metric: &Self::MetricType) -> Result<()> {
+        // Get a client from the pool
+        let pool_client = self.pool.get().await?;
+
         // Get the prepared statement
         let stmt_opt = self.statements.get("insert_metric").cloned();
         let stmt = match stmt_opt {
@@ -574,11 +613,11 @@ where
 
         // Convert the metric to parameters
         let params = self.metric_to_params(metric);
-        let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-            params.iter().map(|p| p.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+        let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Send + Sync)> =
+            params.iter().map(|p| p.as_ref()).collect();
 
         // Execute the statement
-        self.client.execute(&stmt, &params_refs).await
+        pool_client.execute(&stmt, &params_refs).await
             .map_err(|e| AgentError::Database(e))?;
 
         Ok(())
@@ -592,24 +631,27 @@ where
         let batch_size = self.config.batch_size;
         let mut stored_count = 0;
 
+        // Get the prepared statement
+        let stmt_opt = self.statements.get("insert_metric").cloned();
+        let stmt = match stmt_opt {
+            Some(s) => s,
+            None => return Err(AgentError::Other("Insert metric statement not prepared".to_string())),
+        };
+
         // Process in batches to avoid excessive memory usage or statement size limits
         for chunk in metrics.chunks(batch_size) {
-            // Get the prepared statement
-            let stmt_opt = self.statements.get("insert_metric").cloned();
-            let stmt = match stmt_opt {
-                Some(s) => s,
-                None => return Err(AgentError::Other("Insert metric statement not prepared".to_string())),
-            };
+            // Get a client from the pool
+            let pool_client = self.pool.get().await?;
 
             // Start a transaction for the batch
-            let tx = self.client.transaction().await
+            let tx = pool_client.transaction().await
                 .map_err(|e| AgentError::Database(e))?;
 
             // Insert each metric
             for metric in chunk {
                 let params = self.metric_to_params(metric);
-                let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                    params.iter().map(|p| p.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+                let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Send + Sync)> =
+                    params.iter().map(|p| p.as_ref()).collect();
 
                 tx.execute(&stmt, &params_refs).await
                     .map_err(|e| AgentError::Database(e))?;
@@ -626,6 +668,9 @@ where
     }
 
     async fn register_entity(&self, entity: &Self::EntityType) -> Result<()> {
+        // Get a client from the pool
+        let pool_client = self.pool.get().await?;
+
         // Get the prepared statement
         let stmt_opt = self.statements.get("insert_entity").cloned();
         let stmt = match stmt_opt {
@@ -635,11 +680,11 @@ where
 
         // Convert entity to parameters
         let params = self.entity_to_params(entity);
-        let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-            params.iter().map(|p| p.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+        let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Send + Sync)> =
+            params.iter().map(|p| p.as_ref()).collect();
 
         // Execute statement
-        self.client.execute(&stmt, &params_refs).await
+        pool_client.execute(&stmt, &params_refs).await
             .map_err(|e| AgentError::Database(e))?;
 
         Ok(())

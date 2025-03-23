@@ -222,10 +222,10 @@ impl<T> GenericHealthCheck<T> {
 impl<T> HealthCheck for GenericHealthCheck<T>
 where
     T: Send + Sync + 'static,
-    for<'a> &'a T: Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool>> + Send>>,
+    T: Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool>> + Send>>,
 {
     async fn check_health(&self) -> Result<bool> {
-        (self.inner)(self).await
+        (self.inner)().await
     }
 
     fn name(&self) -> &str {

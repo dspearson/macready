@@ -364,7 +364,7 @@ pub async fn spawn_and_process<S: ProcessSource>(
     });
 
     // Spawn a task to log stderr
-    let stderr_task = tokio::spawn(async move {
+    let stderr_task: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
         if let Err(e) = handle.log_stderr().await {
             warn!("Error reading stderr: {}", e);
         }
