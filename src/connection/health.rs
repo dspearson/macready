@@ -225,7 +225,7 @@ where
     for<'a> &'a T: Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool>> + Send>>,
 {
     async fn check_health(&self) -> Result<bool> {
-        (self.inner.as_ref())().await
+        (self.inner)(self).await
     }
 
     fn name(&self) -> &str {

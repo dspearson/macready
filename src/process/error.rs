@@ -22,7 +22,7 @@ pub enum ProcessError {
     Timeout(Duration),
 
     #[error("Failed to read from process: {0}")]
-    ReadError(#[from] io::Error),
+    ReadError(io::Error),  // Removed the #[from] attribute here
 
     #[error("Process output parse error: {0}")]
     ParseError(String),

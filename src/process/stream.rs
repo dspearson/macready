@@ -1,12 +1,8 @@
 use std::collections::HashMap;
-use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::str::FromStr;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use log::{debug, error, trace, warn};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use log::debug;
 use tokio::sync::mpsc;
 
 use super::error::{ProcessError, ProcessResult};
@@ -83,7 +79,8 @@ where
         loop {
             match self.rx.recv().await {
                 Some(line) => {
-                    if (self.filter)(&line) {
+                    let mut filter = &mut self.filter;
+                    if filter(&line) {
                         return Some(line);
                     }
                 }
@@ -98,7 +95,7 @@ where
         let (tx, rx) = mpsc::channel(100);
 
         // Spawn a task to filter and forward lines
-        let filter = self.filter;
+        let mut filter = self.filter;
         let mut input_rx = self.rx;
 
         tokio::spawn(async move {
@@ -421,12 +418,12 @@ impl<T: Send + 'static> StreamParser<T> for DelimitedTextParser<T> {
 
         // Handle header line
         if self.has_header && !self.header_processed {
-            let mut parser = self;
+            let parser = self as *const Self as *mut Self;
             // We need to cast away the const to modify the fields
-            let parser = unsafe { &mut *(parser as *const Self as *mut Self) };
-
-            parser.columns = fields;
-            parser.header_processed = true;
+            unsafe {
+                (*parser).columns = fields;
+                (*parser).header_processed = true;
+            }
 
             return Ok(None);
         }
@@ -565,12 +562,12 @@ impl<T: Send + 'static> StreamParser<T> for FixedWidthParser<T> {
 
         // Handle header line
         if self.has_header && !self.header_processed {
-            let mut parser = self;
+            let parser = self as *const Self as *mut Self;
             // We need to cast away the const to modify the fields
-            let parser = unsafe { &mut *(parser as *const Self as *mut Self) };
-
-            parser.columns = fields;
-            parser.header_processed = true;
+            unsafe {
+                (*parser).columns = fields;
+                (*parser).header_processed = true;
+            }
 
             return Ok(None);
         }
@@ -581,14 +578,17 @@ impl<T: Send + 'static> StreamParser<T> for FixedWidthParser<T> {
 }
 
 /// A parser that handles JSON lines
-pub struct JsonLinesParser<T> {
+pub struct JsonLinesParser<T>
+where
+    T: for<'de> serde::Deserialize<'de> + Send + Sync + 'static,
+{
     /// Phantom data for record type
     _record: PhantomData<T>,
 }
 
 impl<T> JsonLinesParser<T>
 where
-    T: for<'de> serde::Deserialize<'de> + Send + 'static,
+    T: for<'de> serde::Deserialize<'de> + Send + Sync + 'static,
 {
     /// Create a new JSON lines parser
     pub fn new() -> Self {
@@ -600,7 +600,7 @@ where
 
 impl<T> StreamParser<T> for JsonLinesParser<T>
 where
-    T: for<'de> serde::Deserialize<'de> + Send + 'static,
+    T: for<'de> serde::Deserialize<'de> + Send + Sync + 'static,
 {
     fn parse(&self, line: &str) -> ProcessResult<Option<T>> {
         // Skip empty lines
@@ -618,6 +618,7 @@ where
 /// A parser that calls a custom function for each line
 pub struct CustomParser<T, F>
 where
+    T: Send + Sync + 'static,
     F: Fn(&str) -> ProcessResult<Option<T>> + Send + Sync,
 {
     /// Function to parse a line
@@ -629,6 +630,7 @@ where
 
 impl<T, F> CustomParser<T, F>
 where
+    T: Send + Sync + 'static,
     F: Fn(&str) -> ProcessResult<Option<T>> + Send + Sync,
 {
     /// Create a new custom parser
@@ -642,7 +644,8 @@ where
 
 impl<T, F> StreamParser<T> for CustomParser<T, F>
 where
-    F: Fn(&str) -> ProcessResult<Option<T>> + Send + Sync,
+    T: Send + Sync + 'static,
+    F: Fn(&str) -> ProcessResult<Option<T>> + Send + Sync + 'static,
 {
     fn parse(&self, line: &str) -> ProcessResult<Option<T>> {
         (self.parse_fn)(line)
@@ -658,7 +661,8 @@ pub trait StreamParserBuilder<T> {
 /// Builder for delimited text parsers
 pub struct DelimitedTextParserBuilder<T, F>
 where
-    F: Fn(&[String]) -> ProcessResult<T> + Send + Sync + 'static,
+    T: Send + 'static,
+    F: Fn(&[String]) -> ProcessResult<T> + Send + Sync + 'static + Clone,
 {
     /// Delimiter character
     delimiter: char,
@@ -679,7 +683,7 @@ where
 impl<T, F> DelimitedTextParserBuilder<T, F>
 where
     T: Send + 'static,
-    F: Fn(&[String]) -> ProcessResult<T> + Send + Sync + 'static,
+    F: Fn(&[String]) -> ProcessResult<T> + Send + Sync + 'static + Clone,
 {
     /// Create a new delimited text parser builder
     pub fn new(delimiter: char, converter: F) -> Self {
@@ -708,7 +712,7 @@ where
 impl<T, F> StreamParserBuilder<T> for DelimitedTextParserBuilder<T, F>
 where
     T: Send + 'static,
-    F: Fn(&[String]) -> ProcessResult<T> + Send + Sync + 'static,
+    F: Fn(&[String]) -> ProcessResult<T> + Send + Sync + 'static + Clone,
 {
     fn build(&self) -> Box<dyn StreamParser<T>> {
         Box::new(DelimitedTextParser::new(self.delimiter, self.has_header, self.converter.clone())

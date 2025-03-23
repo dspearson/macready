@@ -1,5 +1,5 @@
 use chrono::Local;
-use log::{Level, LevelFilter};
+use log::LevelFilter;
 use std::io::Write;
 
 use crate::config::LogLevel;
@@ -18,14 +18,13 @@ pub fn init_logger(level: LogLevel, quiet: bool) {
     // Initialize with custom format
     env_logger::Builder::from_env(env)
         .format(|buf, record| {
-            let level_style = buf.default_styled_level(record.level());
             let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
 
             writeln!(
                 buf,
                 "{} {} [{}] {}",
                 timestamp,
-                level_style,
+                record.level(),
                 record.target(),
                 record.args()
             )

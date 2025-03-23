@@ -1,11 +1,10 @@
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-use log::{debug, error, info, trace, warn};
+use chrono::Utc;
+use log::debug;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use tokio_postgres::{Client, Statement};
-use uuid::Uuid;
 
 use crate::collector::MetricPoint;
 use crate::connection::postgres::{establish_connection, PgConfig};
@@ -114,6 +113,29 @@ impl PostgresStorageConfigBuilder {
     }
 }
 
+/// PostgreSQL schema information
+#[derive(Debug, Clone)]
+struct PostgresSchema {
+    /// Metric columns
+    metric_columns: Vec<ColumnInfo>,
+
+    /// Entity columns
+    entity_columns: Vec<ColumnInfo>,
+
+    /// Metric value columns
+    metric_value_columns: Vec<String>,
+}
+
+/// Column information
+#[derive(Debug, Clone)]
+struct ColumnInfo {
+    /// Column name
+    name: String,
+
+    /// PostgreSQL type
+    pg_type: String,
+}
+
 /// PostgreSQL storage implementation
 pub struct PostgresStorage<M, E>
 where
@@ -138,29 +160,6 @@ where
     /// Phantom data for generics
     _metric_type: PhantomData<M>,
     _entity_type: PhantomData<E>,
-}
-
-/// PostgreSQL schema information
-#[derive(Debug, Clone)]
-struct PostgresSchema {
-    /// Metric columns
-    metric_columns: Vec<ColumnInfo>,
-
-    /// Entity columns
-    entity_columns: Vec<ColumnInfo>,
-
-    /// Metric value columns
-    metric_value_columns: Vec<String>,
-}
-
-/// Column information
-#[derive(Debug, Clone)]
-struct ColumnInfo {
-    /// Column name
-    name: String,
-
-    /// PostgreSQL type
-    pg_type: String,
 }
 
 impl<M, E> PostgresStorage<M, E>
@@ -195,7 +194,7 @@ where
     }
 
     /// Initialize schema information based on metric and entity types
-    async fn initialize_schema(client: &Client, config: &PostgresStorageConfig) -> Result<PostgresSchema> {
+    async fn initialize_schema(_client: &Client, config: &PostgresStorageConfig) -> Result<PostgresSchema> {
         // This would typically involve inspecting the database schema
         // For now, we'll create a basic schema based on the entity and metric types
 
@@ -505,9 +504,10 @@ where
         // Add is_active
         params.push(Box::new(entity.is_active()));
 
-        // Add metadata as JSON
+        // Add metadata as JSON string instead of JSON value directly
         let metadata = serde_json::to_value(entity.to_json()).unwrap_or(serde_json::Value::Null);
-        params.push(Box::new(metadata));
+        let metadata_str = serde_json::to_string(&metadata).unwrap_or_default();
+        params.push(Box::new(metadata_str));
 
         // Add created_at and updated_at
         let now = Utc::now();
@@ -522,7 +522,7 @@ where
         let mut params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>> = Vec::new();
 
         // Add ID (generate a new UUID)
-        params.push(Box::new(Uuid::new_v4()));
+        params.push(Box::new(uuid::Uuid::new_v4()));
 
         // Add entity ID if present, otherwise null
         if let Some(entity_id) = metric.entity_id() {
@@ -565,27 +565,23 @@ where
     type EntityType = E;
 
     async fn store_metric(&self, metric: &Self::MetricType) -> Result<()> {
-        execute_with_retry(
-            || {
-                let client = Arc::clone(&self.client);
-                let stmt = self.statements.get("insert_metric").cloned()
-                    .ok_or_else(|| AgentError::Other("Insert metric statement not prepared".to_string()))?;
-                let params = self.metric_to_params(metric);
-                let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                    params.iter().map(|p| p.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+        // Get the prepared statement
+        let stmt_opt = self.statements.get("insert_metric").cloned();
+        let stmt = match stmt_opt {
+            Some(s) => s,
+            None => return Err(AgentError::Other("Insert metric statement not prepared".to_string())),
+        };
 
-                Box::pin(async move {
-                    client.execute(&stmt, &params_refs).await.map_err(|e| {
-                        AgentError::Database(e)
-                    })?;
+        // Convert the metric to parameters
+        let params = self.metric_to_params(metric);
+        let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+            params.iter().map(|p| p.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
 
-                    Ok(())
-                })
-            },
-            self.config.retry.clone(),
-            "store_metric",
-        )
-        .await
+        // Execute the statement
+        self.client.execute(&stmt, &params_refs).await
+            .map_err(|e| AgentError::Database(e))?;
+
+        Ok(())
     }
 
     async fn store_metrics(&self, metrics: &[Self::MetricType]) -> Result<usize> {
@@ -598,73 +594,55 @@ where
 
         // Process in batches to avoid excessive memory usage or statement size limits
         for chunk in metrics.chunks(batch_size) {
-            execute_with_retry(
-                || {
-                    let client = Arc::clone(&self.client);
-                    let stmt = self.statements.get("insert_metric").cloned()
-                        .ok_or_else(|| AgentError::Other("Insert metric statement not prepared".to_string()))?;
-                    let chunk = chunk.to_vec();
+            // Get the prepared statement
+            let stmt_opt = self.statements.get("insert_metric").cloned();
+            let stmt = match stmt_opt {
+                Some(s) => s,
+                None => return Err(AgentError::Other("Insert metric statement not prepared".to_string())),
+            };
 
-                    Box::pin(async move {
-                        // Start a transaction for the batch
-                        let tx = client.transaction().await.map_err(|e| {
-                            AgentError::Database(e)
-                        })?;
+            // Start a transaction for the batch
+            let tx = self.client.transaction().await
+                .map_err(|e| AgentError::Database(e))?;
 
-                        // Insert each metric
-                        for metric in chunk {
-                            let params = self.metric_to_params(&metric);
-                            let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                                params.iter().map(|p| p.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+            // Insert each metric
+            for metric in chunk {
+                let params = self.metric_to_params(metric);
+                let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                    params.iter().map(|p| p.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
 
-                            tx.execute(&stmt, &params_refs).await.map_err(|e| {
-                                AgentError::Database(e)
-                            })?;
-                        }
+                tx.execute(&stmt, &params_refs).await
+                    .map_err(|e| AgentError::Database(e))?;
+            }
 
-                        // Commit the transaction
-                        tx.commit().await.map_err(|e| {
-                            AgentError::Database(e)
-                        })?;
+            // Commit the transaction
+            tx.commit().await
+                .map_err(|e| AgentError::Database(e))?;
 
-                        Ok(chunk.len())
-                    })
-                },
-                self.config.retry.clone(),
-                "store_metrics_batch",
-            )
-            .await
-            .map(|count| {
-                stored_count += count;
-                stored_count
-            })?;
+            stored_count += chunk.len();
         }
 
         Ok(stored_count)
     }
 
     async fn register_entity(&self, entity: &Self::EntityType) -> Result<()> {
-        execute_with_retry(
-            || {
-                let client = Arc::clone(&self.client);
-                let stmt = self.statements.get("insert_entity").cloned()
-                    .ok_or_else(|| AgentError::Other("Insert entity statement not prepared".to_string()))?;
-                let params = self.entity_to_params(entity);
-                let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                    params.iter().map(|p| p.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+        // Get the prepared statement
+        let stmt_opt = self.statements.get("insert_entity").cloned();
+        let stmt = match stmt_opt {
+            Some(s) => s,
+            None => return Err(AgentError::Other("Insert entity statement not prepared".to_string())),
+        };
 
-                Box::pin(async move {
-                    client.execute(&stmt, &params_refs).await.map_err(|e| {
-                        AgentError::Database(e)
-                    })?;
+        // Convert entity to parameters
+        let params = self.entity_to_params(entity);
+        let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+            params.iter().map(|p| p.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
 
-                    Ok(())
-                })
-            },
-            self.config.retry.clone(),
-            "register_entity",
-        )
-        .await
+        // Execute statement
+        self.client.execute(&stmt, &params_refs).await
+            .map_err(|e| AgentError::Database(e))?;
+
+        Ok(())
     }
 
     async fn update_entity(&self, entity: &Self::EntityType) -> Result<()> {
@@ -673,104 +651,72 @@ where
     }
 
     async fn get_entity(&self, id: &<Self::EntityType as Entity>::Id) -> Result<Self::EntityType> {
-        execute_with_retry(
-            || {
-                let client = Arc::clone(&self.client);
-                let stmt = self.statements.get("get_entity_by_id").cloned()
-                    .ok_or_else(|| AgentError::Other("Get entity by ID statement not prepared".to_string()))?;
-                let id_str = format!("{:?}", id);
+        // Get the prepared statement
+        let stmt_opt = self.statements.get("get_entity_by_id").cloned();
+        let stmt = match stmt_opt {
+            Some(s) => s,
+            None => return Err(AgentError::Other("Get entity by ID statement not prepared".to_string())),
+        };
 
-                Box::pin(async move {
-                    let row = client.query_opt(&stmt, &[&id_str]).await.map_err(|e| {
-                        AgentError::Database(e)
-                    })?;
+        let id_str = format!("{:?}", id);
 
-                    match row {
-                        Some(_row) => {
-                            // In a real implementation, we'd deserialize the entity from the row
-                            // For now, we'll just return an error
-                            Err(AgentError::Other("Entity deserialization not implemented".to_string()))
-                        },
-                        None => Err(AgentError::EntityNotFound(format!("Entity with ID {:?} not found", id))),
-                    }
-                })
+        let row = self.client.query_opt(&stmt, &[&id_str]).await
+            .map_err(|e| AgentError::Database(e))?;
+
+        match row {
+            Some(_row) => {
+                // In a real implementation, we'd deserialize the entity from the row
+                // For now, we'll just return an error
+                Err(AgentError::Other("Entity deserialization not implemented".to_string()))
             },
-            self.config.retry.clone(),
-            "get_entity",
-        )
-        .await
+            None => Err(AgentError::EntityNotFound(format!("Entity with ID {:?} not found", id))),
+        }
     }
 
     async fn get_entity_by_name(&self, name: &str) -> Result<Self::EntityType> {
-        execute_with_retry(
-            || {
-                let client = Arc::clone(&self.client);
-                let stmt = self.statements.get("get_entity_by_name").cloned()
-                    .ok_or_else(|| AgentError::Other("Get entity by name statement not prepared".to_string()))?;
-                let name = name.to_string();
+        // Get the prepared statement
+        let stmt_opt = self.statements.get("get_entity_by_name").cloned();
+        let stmt = match stmt_opt {
+            Some(s) => s,
+            None => return Err(AgentError::Other("Get entity by name statement not prepared".to_string())),
+        };
 
-                Box::pin(async move {
-                    let row = client.query_opt(&stmt, &[&name]).await.map_err(|e| {
-                        AgentError::Database(e)
-                    })?;
+        let row = self.client.query_opt(&stmt, &[&name]).await
+            .map_err(|e| AgentError::Database(e))?;
 
-                    match row {
-                        Some(_row) => {
-                            // In a real implementation, we'd deserialize the entity from the row
-                            // For now, we'll just return an error
-                            Err(AgentError::Other("Entity deserialization not implemented".to_string()))
-                        },
-                        None => Err(AgentError::EntityNotFound(format!("Entity with name '{}' not found", name))),
-                    }
-                })
+        match row {
+            Some(_row) => {
+                // In a real implementation, we'd deserialize the entity from the row
+                // For now, we'll just return an error
+                Err(AgentError::Other("Entity deserialization not implemented".to_string()))
             },
-            self.config.retry.clone(),
-            "get_entity_by_name",
-        )
-        .await
+            None => Err(AgentError::EntityNotFound(format!("Entity with name '{}' not found", name))),
+        }
     }
 
     async fn entity_exists(&self, id: &<Self::EntityType as Entity>::Id) -> Result<bool> {
-        execute_with_retry(
-            || {
-                let client = Arc::clone(&self.client);
-                let stmt = self.statements.get("entity_exists").cloned()
-                    .ok_or_else(|| AgentError::Other("Entity exists statement not prepared".to_string()))?;
-                let id_str = format!("{:?}", id);
+        // Get the prepared statement
+        let stmt_opt = self.statements.get("entity_exists").cloned();
+        let stmt = match stmt_opt {
+            Some(s) => s,
+            None => return Err(AgentError::Other("Entity exists statement not prepared".to_string())),
+        };
 
-                Box::pin(async move {
-                    let row = client.query_opt(&stmt, &[&id_str]).await.map_err(|e| {
-                        AgentError::Database(e)
-                    })?;
+        let id_str = format!("{:?}", id);
 
-                    Ok(row.is_some())
-                })
-            },
-            self.config.retry.clone(),
-            "entity_exists",
-        )
-        .await
+        let row = self.client.query_opt(&stmt, &[&id_str]).await
+            .map_err(|e| AgentError::Database(e))?;
+
+        Ok(row.is_some())
     }
 
     async fn health_check(&self) -> Result<bool> {
-        execute_with_retry(
-            || {
-                let client = Arc::clone(&self.client);
+        // Simple query to check connection health
+        let row = self.client.query_one("SELECT 1", &[]).await
+            .map_err(|e| AgentError::Database(e))?;
 
-                Box::pin(async move {
-                    // Simple query to check connection health
-                    let row = client.query_one("SELECT 1", &[]).await.map_err(|e| {
-                        AgentError::Database(e)
-                    })?;
-
-                    let value: i32 = row.get(0);
-                    Ok(value == 1)
-                })
-            },
-            self.config.retry.clone(),
-            "health_check",
-        )
-        .await
+        let value: i32 = row.get(0);
+        Ok(value == 1)
     }
 
     fn name(&self) -> &str {

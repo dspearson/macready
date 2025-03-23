@@ -1,5 +1,5 @@
 use clap::{Parser, ValueEnum};
-use config::{Config, ConfigError, File};
+use config::{Config, File};
 use serde::Deserialize;
 use std::path::Path;
 use std::str::FromStr;
@@ -113,7 +113,7 @@ pub fn load_config<C: ConfigLoader + serde::de::DeserializeOwned>(
                 if Path::new(&path).exists() {
                     builder.add_source(File::with_name(&path))
                 } else {
-                    return Err(AgentError::Config(format!("Config file not found: {}", path).into()));
+                    return Err(AgentError::Config(config::ConfigError::NotFound(path)));
                 }
             },
             ConfigSource::Environment(prefix) => {
@@ -128,7 +128,7 @@ pub fn load_config<C: ConfigLoader + serde::de::DeserializeOwned>(
                     "json" => builder.add_source(config::File::from_str(&content, config::FileFormat::Json)),
                     "toml" => builder.add_source(config::File::from_str(&content, config::FileFormat::Toml)),
                     "yaml" => builder.add_source(config::File::from_str(&content, config::FileFormat::Yaml)),
-                    _ => return Err(AgentError::Config(format!("Unsupported config format: {}", format).into())),
+                    _ => return Err(AgentError::Config(config::ConfigError::Message(format!("Unsupported config format: {}", format)))),
                 }
             },
         };

@@ -1,4 +1,4 @@
-use log::{debug, error, info, trace};
+use log::{debug, error};
 use native_tls::TlsConnector;
 use postgres_native_tls::MakeTlsConnector;
 use std::future::Future;
@@ -8,7 +8,6 @@ use tokio::time;
 use tokio_postgres::{Client, NoTls};
 
 use crate::error::{AgentError, Result};
-use crate::retry::{execute_with_retry, RetryConfig};
 
 /// SSL mode for PostgreSQL connections
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +33,7 @@ impl SslMode {
             "require" => Ok(SslMode::Require),
             "verify-ca" => Ok(SslMode::VerifyCa),
             "verify-full" => Ok(SslMode::VerifyFull),
-            _ => Err(AgentError::Config(format!("Invalid SSL mode: {}", s).into())),
+            _ => Err(AgentError::Config(config::ConfigError::Message(format!("Invalid SSL mode: {}", s)))),
         }
     }
 
@@ -142,7 +141,12 @@ async fn connect_without_tls(config: &PgConfig) -> Result<Arc<Client>> {
         .await
         .map_err(|e| AgentError::Connection(format!("Failed to connect to database: {}", e)))?;
 
-    spawn_connection_handler(connection);
+    // Spawn a task to drive the connection
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            error!("Database connection error: {}", e);
+        }
+    });
 
     // Wrap the client in an Arc
     let client_arc = Arc::new(client);
@@ -168,7 +172,12 @@ async fn connect_with_tls(config: &PgConfig) -> Result<Arc<Client>> {
         .await
         .map_err(|e| AgentError::Connection(format!("Failed to connect to database with TLS: {}", e)))?;
 
-    spawn_connection_handler(connection);
+    // Spawn a task to drive the connection
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            error!("Database connection error: {}", e);
+        }
+    });
 
     // Wrap the client in an Arc
     let client_arc = Arc::new(client);
@@ -186,11 +195,13 @@ fn build_tls_connector(config: &PgConfig) -> Result<TlsConnector> {
     match config.ssl_mode {
         SslMode::Require => {
             // Don't verify certificates
-            tls_builder = tls_builder.danger_accept_invalid_certs(true);
+            let tb = tls_builder.danger_accept_invalid_certs(true);
+            tls_builder = tb;
         },
         SslMode::VerifyCa => {
             // Verify CA but not hostname
-            tls_builder = tls_builder.danger_accept_invalid_hostnames(true);
+            let tb = tls_builder.danger_accept_invalid_hostnames(true);
+            tls_builder = tb;
         },
         SslMode::VerifyFull => {
             // Full verification (default)
@@ -201,18 +212,7 @@ fn build_tls_connector(config: &PgConfig) -> Result<TlsConnector> {
         }
     }
 
-    tls_builder.build().map_err(|e| AgentError::Tls(e))
-}
-
-/// Spawn a task to handle the connection
-fn spawn_connection_handler(
-    connection: impl Future<Output = Result<(), tokio_postgres::Error>> + Send + 'static,
-) {
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            error!("Database connection error: {}", e);
-        }
-    });
+    tls_builder.build().map_err(AgentError::Tls)
 }
 
 /// Validate a database connection

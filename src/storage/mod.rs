@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use std::sync::Arc;
 use std::time::Duration;
 
 use crate::collector::MetricPoint;
@@ -44,7 +43,7 @@ pub trait Storage: Send + Sync + 'static {
 }
 
 /// PostgreSQL storage implementation
-mod postgres_impl;
+pub mod postgres_impl;  // Change from `mod` to `pub mod`
 pub use postgres_impl::{PostgresStorage, PostgresStorageConfig, PostgresStorageConfigBuilder};
 
 /// In-memory storage for testing

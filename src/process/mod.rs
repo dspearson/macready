@@ -4,9 +4,9 @@
 //! output from external processes. It's designed to make it easy to collect
 //! metrics from command-line tools and system utilities.
 
-mod command;
-mod stream;
-mod error;
+pub mod command;
+pub mod stream;
+pub mod error;
 
 pub use command::{Command, CommandBuilder, ProcessHandle};
 pub use stream::{LineStream, RecordStream, StreamParser};

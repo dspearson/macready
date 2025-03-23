@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::{Arc, RwLock};
-use uuid::Uuid;
+
 use crate::error::{AgentError, Result};
 
 /// Trait for identifiable entities that metrics can be collected for
@@ -80,14 +80,23 @@ impl<E: Entity> EntityRegistry<E> {
         // Update the entity map
         entities.insert(id.clone(), Arc::clone(&entity));
 
-        // Update the name index if needed
+        // Find and update name index if needed
+        let mut old_name = None;
+
+        // Collect entries to remove first
         for (existing_name, existing_id) in names.iter() {
             if existing_id == &id && existing_name != &name {
-                // The name has changed, remove old mapping
-                names.remove(existing_name);
+                old_name = Some(existing_name.clone());
                 break;
             }
         }
+
+        // Then remove as needed
+        if let Some(name_to_remove) = old_name {
+            names.remove(&name_to_remove);
+        }
+
+        // Add the new entry
         names.insert(name, id);
 
         Ok(entity)
