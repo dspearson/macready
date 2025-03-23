@@ -1,268 +1,158 @@
-use clap::{Parser, ValueEnum};
-use config::{Config, File};
+use config::{self, File};
+use log::{debug, error};
 use serde::Deserialize;
 use std::path::Path;
-use std::str::FromStr;
-use log::LevelFilter;
 
-use crate::error::{AgentError, Result};
+use crate::prelude::{AgentError, Result};
 
-/// Log level enum compatible with clap
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+/// Database connection configuration
+#[derive(Debug, Deserialize, Clone)]
+pub struct DatabaseConfig {
+    /// Database host
+    pub host: String,
+    /// Database port
+    pub port: u16,
+    /// Database name
+    pub name: String,
+    /// Database username
+    pub username: String,
+    /// Database password
+    pub password: String,
+    /// SSL mode
+    #[serde(default)]
+    pub ssl_mode: SslMode,
+    /// CA certificate path
+    #[serde(default)]
+    pub ca_cert: Option<String>,
+    /// Client certificate path
+    #[serde(default)]
+    pub client_cert: Option<String>,
+    /// Client key path
+    #[serde(default)]
+    pub client_key: Option<String>,
+}
+
+/// SSL mode for database connections
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SslMode {
+    /// Disable SSL
+    Disable,
+    /// Allow SSL
+    Allow,
+    /// Prefer SSL
+    Prefer,
+    /// Require SSL
+    Require,
+    /// Verify CA
+    VerifyCa,
+    /// Verify full
+    VerifyFull,
+}
+
+impl Default for SslMode {
+    fn default() -> Self {
+        SslMode::Disable
+    }
+}
+
+/// Agent configuration
+#[derive(Debug, Deserialize, Clone)]
+pub struct AgentConfig {
+    /// Database connection configuration
+    pub connection: DatabaseConfig,
+    /// Collection interval in seconds
+    #[serde(default = "default_collection_interval")]
+    pub collection_interval: u64,
+    /// Storage type
+    #[serde(default)]
+    pub storage_type: StorageType,
+    /// Logging level
+    #[serde(default)]
+    pub log_level: LogLevel,
+}
+
+/// Default collection interval
+fn default_collection_interval() -> u64 {
+    60
+}
+
+/// Storage type
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageType {
+    /// PostgreSQL storage
+    Postgres,
+    /// In-memory storage
+    Memory,
+}
+
+impl Default for StorageType {
+    fn default() -> Self {
+        StorageType::Postgres
+    }
+}
+
+/// Logging level
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum LogLevel {
-    /// Only show errors
+    /// Error level
     Error,
-    /// Show errors and warnings
+    /// Warning level
     Warn,
-    /// Show errors, warnings, and info (default)
+    /// Info level
     Info,
-    /// Show errors, warnings, info, and debug messages
+    /// Debug level
     Debug,
-    /// Show all messages including trace
+    /// Trace level
     Trace,
 }
 
-impl FromStr for LogLevel {
-    type Err = String;
+impl Default for LogLevel {
+    fn default() -> Self {
+        LogLevel::Info
+    }
+}
 
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "error" => Ok(LogLevel::Error),
-            "warn" => Ok(LogLevel::Warn),
-            "info" => Ok(LogLevel::Info),
-            "debug" => Ok(LogLevel::Debug),
-            "trace" => Ok(LogLevel::Trace),
-            _ => Err(format!("Unknown log level: {}", s)),
+/// Load agent configuration from a file
+pub fn load_config<P: AsRef<Path>>(path: P) -> Result<AgentConfig> {
+    let path = path.as_ref();
+    debug!("Loading configuration from {}", path.display());
+
+    // Check if the file exists
+    if !path.exists() {
+        error!("Configuration file {} does not exist", path.display());
+        return Err(AgentError::Config(format!("Configuration file not found: {}", path.display())));
+    }
+
+    // Get the file extension
+    let extension = match path.extension() {
+        Some(ext) => ext.to_string_lossy().to_lowercase(),
+        None => {
+            error!("Configuration file has no extension");
+            return Err(AgentError::Config(format!("Configuration file has no extension: {}", path.display())));
         }
-    }
-}
-
-impl LogLevel {
-    /// Convert to log::LevelFilter
-    pub fn to_filter(&self) -> LevelFilter {
-        match self {
-            LogLevel::Error => LevelFilter::Error,
-            LogLevel::Warn => LevelFilter::Warn,
-            LogLevel::Info => LevelFilter::Info,
-            LogLevel::Debug => LevelFilter::Debug,
-            LogLevel::Trace => LevelFilter::Trace,
-        }
-    }
-}
-
-/// Base CLI arguments for metrics agents
-#[derive(Parser, Debug)]
-#[command(author, version, about)]
-pub struct BaseArgs {
-    /// Path to config file
-    #[arg(long, default_value = "config.toml")]
-    pub config: String,
-
-    /// Hostname to use for metrics collection
-    #[arg(long)]
-    pub hostname: Option<String>,
-
-    /// Verbosity level for logging
-    #[arg(short, long, default_value = "info")]
-    pub log_level: LogLevel,
-
-    /// Quiet mode (errors only, overrides log-level)
-    #[arg(short, long)]
-    pub quiet: bool,
-
-    /// Show additional detail
-    #[arg(short, long)]
-    pub verbose: bool,
-}
-
-/// Configuration loader trait
-pub trait ConfigLoader: Sized {
-    /// Load configuration from a file
-    fn load<P: AsRef<Path>>(path: P) -> Result<Self>;
-
-    /// Load configuration from multiple sources with optional merging
-    fn load_from_sources(sources: Vec<ConfigSource>) -> Result<Self>;
-}
-
-/// Configuration source for flexible loading
-pub enum ConfigSource {
-    /// Load from a file
-    File(String),
-
-    /// Load from environment variables
-    Environment(String),
-
-    /// Load from command line arguments
-    CommandLine,
-
-    /// Load from a string
-    String(String, String), // (format, content)
-}
-
-/// Helper function to load configuration from multiple sources
-pub fn load_config<C: ConfigLoader + serde::de::DeserializeOwned>(
-    sources: Vec<ConfigSource>
-) -> Result<C> {
-    // Create a default config builder
-    let mut builder = config::Config::builder();
-
-    // Add each source to the builder
-    for source in sources {
-        builder = match source {
-            ConfigSource::File(path) => {
-                if Path::new(&path).exists() {
-                    builder.add_source(File::with_name(&path))
-                } else {
-                    return Err(AgentError::Config(config::ConfigError::NotFound(path)));
-                }
-            },
-            ConfigSource::Environment(prefix) => {
-                builder.add_source(config::Environment::with_prefix(&prefix))
-            },
-            ConfigSource::CommandLine => {
-                // For now, we don't have a built-in way to handle command line args via config crate
-                builder
-            },
-            ConfigSource::String(format, content) => {
-                match format.to_lowercase().as_str() {
-                    "json" => builder.add_source(config::File::from_str(&content, config::FileFormat::Json)),
-                    "toml" => builder.add_source(config::File::from_str(&content, config::FileFormat::Toml)),
-                    "yaml" => builder.add_source(config::File::from_str(&content, config::FileFormat::Yaml)),
-                    _ => return Err(AgentError::Config(config::ConfigError::Message(format!("Unsupported config format: {}", format)))),
-                }
-            },
-        };
-    }
-
-    // Build and deserialize
-    let config = builder.build()
-        .map_err(|e| AgentError::Config(e))?;
-
-    config.try_deserialize()
-        .map_err(|e| AgentError::Config(e))
-}
-
-/// Initialize the logger based on arguments
-pub fn init_logger(args: &BaseArgs) -> Result<()> {
-    let level = if args.quiet {
-        LogLevel::Error.to_filter()
-    } else {
-        args.log_level.to_filter()
     };
 
-    // Create a default environment and override the log level
-    let env = env_logger::Env::default().default_filter_or(level.to_string());
-
-    // Initialize with custom format
-    env_logger::Builder::from_env(env)
-        .format(|buf, record| {
-            use chrono::Local;
-            use std::io::Write;
-
-            let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-            writeln!(
-                buf,
-                "{} {} [{}] {}",
-                timestamp,
-                record.level(),
-                record.target(),
-                record.args()
-            )
-        })
-        .init();
-
-    Ok(())
-}
-
-/// Get a unique identifier for the current machine
-pub fn get_hostname() -> Result<String> {
-    // Try various methods to get a hostname
-    if let Ok(hostname) = std::env::var("HOSTNAME") {
-        if !hostname.is_empty() {
-            return Ok(hostname);
+    // Check if the extension is supported and create the appropriate FileFormat
+    let format = match extension.as_str() {
+        "toml" => config::FileFormat::Toml,
+        "json" => config::FileFormat::Json,
+        "yaml" | "yml" => config::FileFormat::Yaml,
+        format => {
+            error!("Unsupported configuration format: {}", format);
+            return Err(AgentError::Config(format!("Unsupported config format: {}", format)));
         }
-    }
+    };
 
-    if let Ok(hostname) = hostname::get() {
-        if let Ok(hostname_str) = hostname.into_string() {
-            if !hostname_str.is_empty() {
-                return Ok(hostname_str);
-            }
-        }
-    }
+    // Build configuration
+    let config = config::Config::builder()
+        .add_source(File::with_name(path.to_str().unwrap()).format(format))
+        .build()
+        .map_err(|e| AgentError::Config(e.to_string()))?;
 
-    // Fallback for Linux/Unix systems
-    if cfg!(unix) {
-        use std::process::Command;
-        if let Ok(output) = Command::new("hostname").output() {
-            if output.status.success() {
-                if let Ok(hostname) = String::from_utf8(output.stdout) {
-                    let trimmed = hostname.trim().to_string();
-                    if !trimmed.is_empty() {
-                        return Ok(trimmed);
-                    }
-                }
-            }
-        }
-    }
-
-    // Generate a random identifier as a last resort
-    let random_id = uuid::Uuid::new_v4().to_string();
-    Ok(format!("unknown-host-{}", random_id))
-}
-
-/// Base configuration trait with common settings
-pub trait BaseConfig {
-    /// Get the maximum number of retries for operations
-    fn max_retries(&self) -> usize;
-
-    /// Get the log level setting
-    fn log_level(&self) -> LogLevel;
-
-    /// Get the agent name
-    fn agent_name(&self) -> &str;
-}
-
-/// Database configuration for the agent
-#[derive(Debug, Deserialize, Clone)]
-pub struct DatabaseConfig {
-    pub username: String,
-    pub password: String,
-    pub hosts: Vec<String>,
-    pub port: u16,
-    pub database: String,
-    pub sslmode: String,
-}
-
-/// Default implementation for common database config
-impl Default for DatabaseConfig {
-    fn default() -> Self {
-        Self {
-            username: "postgres".to_string(),
-            password: "postgres".to_string(),
-            hosts: vec!["localhost".to_string()],
-            port: 5432,
-            database: "metrics".to_string(),
-            sslmode: "disable".to_string(),
-        }
-    }
-}
-
-impl DatabaseConfig {
-    /// Generate a connection string from this config
-    pub fn connection_string(&self) -> String {
-        // Join multiple hosts with commas
-        let hosts_with_ports: Vec<String> = self
-            .hosts
-            .iter()
-            .map(|host| format!("{}:{}", host, self.port))
-            .collect();
-
-        let hosts = hosts_with_ports.join(",");
-
-        format!(
-            "postgresql://{}:{}@{}/{}",
-            self.username, self.password, hosts, self.database
-        )
-    }
+    // Deserialize configuration
+    config.try_deserialize()
+        .map_err(|e| AgentError::Config(e.to_string()))
 }

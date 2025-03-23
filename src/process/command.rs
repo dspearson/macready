@@ -348,92 +348,110 @@ pub async fn spawn_and_process<S: ProcessSource>(
         Err(e) => return Err(e.into()),
     };
 
-    let mut handle = spawn_result;
 
     // Clone the source for the tokio task
     let source = Arc::new(source);
 
-    // Spawn a task to process stdout lines
-    let source_clone = Arc::clone(&source);
-    let stdout_task: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
-        if let Err(e) = handle.read_stdout_lines(tx).await {
-            error!("Error reading stdout: {}", e);
-            return Err(e.into());
-        }
-        Ok(())
-    });
-
-    // Spawn a task to log stderr
-    let stderr_task: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
-        if let Err(e) = handle.log_stderr().await {
-            warn!("Error reading stderr: {}", e);
-        }
-        Ok(())
-    });
-
     // Spawn the main processing task
     let task = tokio::spawn(async move {
+        let mut handle = spawn_result;
+
+        // Create channels for the stdout and stderr tasks
+        let stdout_tx = tx.clone();
+        let stderr_tx = tx.clone();
+
+        // Create a oneshot channel for notifying when stdout is done
+        let (stdout_done_tx, stdout_done_rx) = tokio::sync::oneshot::channel();
+        let (stderr_done_tx, stderr_done_rx) = tokio::sync::oneshot::channel::<std::result::Result<(), ProcessError>>();
+
+        // Spawn a task for stdout
+        {
+            let source_clone = Arc::clone(&source);
+
+            tokio::spawn(async move {
+                if let Err(e) = handle.read_stdout_lines(stdout_tx).await {
+                    error!("Error reading stdout: {}", e);
+                    let _ = stdout_done_tx.send(Err(e.into()));
+                    return;
+                }
+                let _ = stdout_done_tx.send(Ok(()));
+            });
+        }
+
+        // Spawn a task for stderr
+        {
+            tokio::spawn(async move {
+                if let Err(e) = handle.log_stderr().await {
+                    warn!("Error reading stderr: {}", e);
+                    let _ = stderr_done_tx.send(Err(e.into()));
+                    return;
+                }
+                let _ = stderr_done_tx.send(Ok(()));
+            });
+        }
+
         let mut restart_attempts = 0;
 
         loop {
             // Process lines from stdout
             while let Some(line) = rx.recv().await {
-                if let Err(e) = source_clone.process_line(line).await {
+                if let Err(e) = source.process_line(line).await {
                     error!("Error processing line: {}", e);
                 }
             }
 
-            // Wait for the process to exit
-            let exit_status = match timeout(config.exit_timeout, stdout_task).await {
-                Ok(Ok(Ok(_))) => {
-                    debug!("Process exited normally");
-                    // Process exited normally, get its exit status
-                    match stderr_task.await {
-                        Ok(_) => {}
+            // Wait for the stdout task to complete with timeout
+            let exit_result = match tokio::time::timeout(config.exit_timeout, stdout_done_rx).await {
+                Ok(Ok(result)) => {
+                    match result {
+                        Ok(_) => {
+                            debug!("Process exited normally");
+                            // Also wait for stderr to complete
+                            let _ = stderr_done_rx.await;
+
+                            // Report normal exit to the source
+                            let status = std::process::ExitStatus::from_raw(0);
+                            if let Err(e) = source.on_exit(status).await {
+                                error!("Error handling process exit: {}", e);
+                            }
+
+                            break Ok(());
+                        },
                         Err(e) => {
-                            warn!("Error waiting for stderr task: {}", e);
+                            error!("Process error: {}", e);
+                            Err(e)
                         }
                     }
-
-                    // Report normal exit to the source
-                    let status = std::process::ExitStatus::from_raw(0);
-                    if let Err(e) = source_clone.on_exit(status).await {
-                        error!("Error handling process exit: {}", e);
-                    }
-
-                    break Ok(());
-                }
-                Ok(Ok(Err(e))) => {
-                    error!("Process error: {}", e);
-
-                    // Report error to the source
-                    if let Err(e2) = source_clone.handle_error(e.into()).await {
-                        error!("Error handling process error: {}", e2);
-                    }
-
-                    // Check if we should restart
-                    if !config.restart_on_exit || restart_attempts >= config.max_restart_attempts {
-                        break Err(AgentError::Collection(format!("Process exited with error after {} restart attempts", restart_attempts)));
-                    }
-
-                    restart_attempts += 1;
-                    debug!("Restarting process (attempt {}/{})", restart_attempts, config.max_restart_attempts);
-
-                    // Wait before restarting
-                    tokio::time::sleep(config.restart_delay).await;
-                    continue;
-                }
+                },
                 Ok(Err(e)) => {
                     error!("Error waiting for stdout task: {}", e);
-                    break Err(AgentError::Collection(format!("Error waiting for stdout task: {}", e)));
-                }
+                    Err(AgentError::Collection(format!("Error waiting for stdout task: {}", e)))
+                },
                 Err(_) => {
                     error!("Process exit timed out after {:?}", config.exit_timeout);
-                    break Err(AgentError::Timeout(format!("Process exit timed out after {:?}", config.exit_timeout)));
+                    Err(AgentError::Timeout(format!("Process exit timed out after {:?}", config.exit_timeout)))
                 }
             };
 
-            return exit_status;
+            // Handle errors
+            if let Err(e) = exit_result {
+                // Report error to the source
+                if let Err(e2) = source.handle_error(e.clone().into()).await {
+                    error!("Error handling process error: {}", e2);
+                }
+
+                // Check if we should restart
+                if !config.restart_on_exit || restart_attempts >= config.max_restart_attempts {
+                    break Err(AgentError::Collection(format!("Process exited with error after {} restart attempts", restart_attempts)));
+                }
+
+                restart_attempts += 1;
+                debug!("Restarting process (attempt {}/{})", restart_attempts, config.max_restart_attempts);
+
+                // Wait before restarting
+                tokio::time::sleep(config.restart_delay).await;
+                continue;
+            }
         }
     });
 

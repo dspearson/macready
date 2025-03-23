@@ -1,85 +1,96 @@
-use thiserror::Error;
-use std::io;
+use std::error::Error as StdError;
 use std::fmt;
 
-/// Primary error type for metrics agent operations
-#[derive(Error, Debug)]
-pub enum AgentError {
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
-
-    #[error("Database error: {0}")]
-    Database(#[from] tokio_postgres::Error),
-
-    #[error("TLS error: {0}")]
-    Tls(#[from] native_tls::Error),
-
-    #[error("Configuration error: {0}")]
-    Config(#[from] config::ConfigError),
-
-    #[error("Entity not found: {0}")]
-    EntityNotFound(String),
-
-    #[error("Connection error: {0}")]
-    Connection(String),
-
-    #[error("Buffer overflow: {0}")]
-    BufferOverflow(String),
-
-    #[error("Timeout error: {0}")]
-    Timeout(String),
-
-    #[error("Parsing error: {0}")]
-    Parse(String),
-
-    #[error("Collection error: {0}")]
-    Collection(String),
-
-    #[error("Retry error: {context} (attempts: {attempts}): {source}")]
-    Retry {
-        context: String,
-        attempts: usize,
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
-
-    #[error("Other error: {0}")]
-    Other(String),
-}
-
-/// Type alias for results with AgentError
+/// Result type for agent operations
 pub type Result<T> = std::result::Result<T, AgentError>;
 
+/// Agent error
+#[derive(Debug, Clone)]
+pub enum AgentError {
+    /// Database error
+    Database(String),
+    /// Retry error
+    Retry(String),
+    /// Collection error
+    Collection(String),
+    /// TLS error
+    Tls(String),
+    /// Storage error
+    Storage(String),
+    /// Entity error
+    Entity(String),
+    /// Config error
+    Config(String),
+    /// Metric error
+    Metric(String),
+    /// Process error
+    Process(String),
+    /// General error
+    General(String),
+    /// Connection error - for database connection issues
+    Connection(String),
+    /// Timeout error
+    Timeout(String),
+    /// Other general error
+    Other(String),
+    /// Entity not found error
+    EntityNotFound(String),
+}
+
 impl AgentError {
-    /// Create a new retry error with context
-    pub fn retry<E>(context: impl Into<String>, attempts: usize, source: E) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        AgentError::Retry {
-            context: context.into(),
-            attempts,
-            source: Box::new(source),
+    /// Create a retry error
+    pub fn retry(context: &str, attempts: usize, err: impl fmt::Display) -> Self {
+        AgentError::Retry(format!("{} failed after {} attempts: {}", context, attempts, err))
+    }
+}
+
+impl fmt::Display for AgentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AgentError::Database(source) => write!(f, "Database error: {}", source),
+            AgentError::Retry(source) => write!(f, "Retry error: {}", source),
+            AgentError::Collection(source) => write!(f, "Collection error: {}", source),
+            AgentError::Tls(source) => write!(f, "TLS error: {}", source),
+            AgentError::Storage(source) => write!(f, "Storage error: {}", source),
+            AgentError::Entity(source) => write!(f, "Entity error: {}", source),
+            AgentError::Config(source) => write!(f, "Config error: {}", source),
+            AgentError::Metric(source) => write!(f, "Metric error: {}", source),
+            AgentError::Process(source) => write!(f, "Process error: {}", source),
+            AgentError::General(source) => write!(f, "General error: {}", source),
+            AgentError::Connection(source) => write!(f, "Connection error: {}", source),
+            AgentError::Timeout(source) => write!(f, "Timeout error: {}", source),
+            AgentError::Other(source) => write!(f, "Other error: {}", source),
+            AgentError::EntityNotFound(source) => write!(f, "Entity not found: {}", source),
         }
     }
 }
 
-/// Create an AgentError from a string message
-impl From<String> for AgentError {
-    fn from(s: String) -> Self {
-        AgentError::Other(s)
+impl StdError for AgentError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        None
     }
 }
 
-/// Create an AgentError from a static string
-impl From<&str> for AgentError {
-    fn from(s: &str) -> Self {
-        AgentError::Other(s.to_string())
+impl From<tokio_postgres::Error> for AgentError {
+    fn from(err: tokio_postgres::Error) -> Self {
+        AgentError::Database(err.to_string())
     }
 }
 
-/// Create from anyhow error
-impl From<anyhow::Error> for AgentError {
-    fn from(err: anyhow::Error) -> Self {
-        AgentError::Other(err.to_string())
+impl From<native_tls::Error> for AgentError {
+    fn from(err: native_tls::Error) -> Self {
+        AgentError::Tls(err.to_string())
+    }
+}
+
+impl From<std::io::Error> for AgentError {
+    fn from(err: std::io::Error) -> Self {
+        AgentError::General(err.to_string())
+    }
+}
+
+impl From<config::ConfigError> for AgentError {
+    fn from(err: config::ConfigError) -> Self {
+        AgentError::Config(err.to_string())
     }
 }

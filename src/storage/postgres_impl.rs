@@ -1,18 +1,24 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use log::debug;
+use log::{debug, error, info, trace, warn};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use tokio_postgres::{Client, Statement};
+use tokio_postgres::{Client, NoTls, Statement};
+use native_tls::TlsConnector;
+use postgres_native_tls::MakeTlsConnector;
 
 use crate::collector::MetricPoint;
-use crate::connection::postgres::{establish_connection, PgConfig};
-use crate::connection::postgres::PgPool;
+use crate::connection::postgres::{PgConfig, PgPool, SslMode};
 use crate::entity::Entity;
 use crate::error::{AgentError, Result};
-use crate::retry::{execute_with_retry, RetryConfig};
+use crate::retry::RetryConfig;
 use crate::storage::Storage;
+
+enum TlsMode {
+    NoTls(NoTls),
+    WithTls(MakeTlsConnector),
+}
 
 /// Configuration for PostgreSQL storage
 #[derive(Debug, Clone)]
@@ -157,6 +163,38 @@ struct ColumnInfo {
     pg_type: String,
 }
 
+// Function to build TLS connector (since the one in the postgres module isn't accessible)
+fn build_tls_connector(config: &PgConfig) -> Result<TlsConnector> {
+    let mut builder = TlsConnector::builder();
+
+    let tls_mode = match config.connection.ssl_mode {
+        SslMode::Disable => TlsMode::NoTls(NoTls),
+        _ => {
+            let connector = build_tls_connector(&config.connection)?;
+            TlsMode::WithTls(MakeTlsConnector::new(connector))
+        }
+    };
+    match config.ssl_mode {
+        SslMode::Require => {
+            // Don't verify certificates
+            builder.danger_accept_invalid_certs(true);
+        },
+        SslMode::VerifyCa => {
+            // Verify CA but not hostname
+            builder.danger_accept_invalid_hostnames(true);
+        },
+        SslMode::VerifyFull => {
+            // Full verification (default)
+        },
+        SslMode::Disable => {
+            // Shouldn't get here
+            return Err(AgentError::Connection("Invalid SSL mode configuration".to_string()));
+        }
+    }
+
+    builder.build().map_err(|e| AgentError::Tls(e.to_string()))
+}
+
 /// PostgreSQL storage implementation
 pub struct PostgresStorage<M, E>
 where
@@ -202,8 +240,26 @@ where
         // Create the connection pool
         let pool = PgPool::new(&config.connection).await?;
 
-        // Get a client for initialization and statements
-        let client = Arc::new(pool.get().await?.into_inner());
+        // Create a direct connection for the schema setup and prepared statements
+        let (direct_client, connection) = tokio_postgres::connect(
+            &config.connection.connection_string(),
+            match config.connection.ssl_mode {
+                SslMode::Disable => NoTls,
+                _ => {
+                    let connector = build_tls_connector(&config.connection)?;
+                    MakeTlsConnector::new(connector)
+                }
+            }
+        ).await.map_err(|e| AgentError::Connection(format!("Failed to connect to database: {}", e)))?;
+
+        // Drive the connection
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                error!("Database connection error: {}", e);
+            }
+        });
+
+        let client = Arc::new(direct_client);
 
         // Initialize schema
         let schema = Self::initialize_schema(&client, &config).await?;
@@ -225,6 +281,8 @@ where
             schema,
             _metric_type: PhantomData,
             _entity_type: PhantomData,
+            pool_size: config.pool_size,
+            pool_recycling: config.pool_recycling,
         })
     }
 
@@ -352,7 +410,7 @@ where
 
         debug!("Creating entities table with SQL: {}", create_entities_sql);
         client.execute(&create_entities_sql, &[]).await.map_err(|e| {
-            AgentError::Database(e)
+            AgentError::Database(e.to_string())
         })?;
 
         // Create metrics table
@@ -372,7 +430,7 @@ where
 
         debug!("Creating metrics table with SQL: {}", create_metrics_sql);
         client.execute(&create_metrics_sql, &[]).await.map_err(|e| {
-            AgentError::Database(e)
+            AgentError::Database(e.to_string())
         })?;
 
         // Create index on entity_id for metrics table
@@ -384,7 +442,7 @@ where
 
         debug!("Creating index with SQL: {}", create_index_sql);
         client.execute(&create_index_sql, &[]).await.map_err(|e| {
-            AgentError::Database(e)
+            AgentError::Database(e.to_string())
         })?;
 
         // Create index on timestamp for metrics table
@@ -396,7 +454,7 @@ where
 
         debug!("Creating timestamp index with SQL: {}", create_timestamp_index_sql);
         client.execute(&create_timestamp_index_sql, &[]).await.map_err(|e| {
-            AgentError::Database(e)
+            AgentError::Database(e.to_string())
         })?;
 
         Ok(())
@@ -439,7 +497,7 @@ where
         debug!("Preparing insert entity statement: {}", insert_entity_sql);
 
         let stmt = client.prepare(&insert_entity_sql).await.map_err(|e| {
-            AgentError::Database(e)
+            AgentError::Database(e.to_string())
         })?;
 
         statements.insert("insert_entity".to_string(), stmt);
@@ -467,7 +525,7 @@ where
         debug!("Preparing insert metric statement: {}", insert_metric_sql);
 
         let stmt = client.prepare(&insert_metric_sql).await.map_err(|e| {
-            AgentError::Database(e)
+            AgentError::Database(e.to_string())
         })?;
 
         statements.insert("insert_metric".to_string(), stmt);
@@ -481,7 +539,7 @@ where
         debug!("Preparing get entity by ID statement: {}", get_entity_by_id_sql);
 
         let stmt = client.prepare(&get_entity_by_id_sql).await.map_err(|e| {
-            AgentError::Database(e)
+            AgentError::Database(e.to_string())
         })?;
 
         statements.insert("get_entity_by_id".to_string(), stmt);
@@ -495,7 +553,7 @@ where
         debug!("Preparing get entity by name statement: {}", get_entity_by_name_sql);
 
         let stmt = client.prepare(&get_entity_by_name_sql).await.map_err(|e| {
-            AgentError::Database(e)
+            AgentError::Database(e.to_string())
         })?;
 
         statements.insert("get_entity_by_name".to_string(), stmt);
@@ -509,7 +567,7 @@ where
         debug!("Preparing entity exists statement: {}", entity_exists_sql);
 
         let stmt = client.prepare(&entity_exists_sql).await.map_err(|e| {
-            AgentError::Database(e)
+            AgentError::Database(e.to_string())
         })?;
 
         statements.insert("entity_exists".to_string(), stmt);
@@ -599,7 +657,6 @@ where
     type MetricType = M;
     type EntityType = E;
 
-
     async fn store_metric(&self, metric: &Self::MetricType) -> Result<()> {
         // Get a client from the pool
         let pool_client = self.pool.get().await?;
@@ -613,12 +670,15 @@ where
 
         // Convert the metric to parameters
         let params = self.metric_to_params(metric);
-        let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Send + Sync)> =
-            params.iter().map(|p| p.as_ref()).collect();
+
+        // Maps from Box<dyn ToSql + Sync> to &(dyn ToSql + Sync)
+        let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params.iter()
+            .map(AsRef::as_ref)
+            .collect();
 
         // Execute the statement
-        pool_client.execute(&stmt, &params_refs).await
-            .map_err(|e| AgentError::Database(e))?;
+        pool_client.execute(&stmt, &params_refs[..]).await
+            .map_err(|e| AgentError::Database(e.to_string()))?;
 
         Ok(())
     }
@@ -645,21 +705,22 @@ where
 
             // Start a transaction for the batch
             let tx = pool_client.transaction().await
-                .map_err(|e| AgentError::Database(e))?;
+                .map_err(|e| AgentError::Database(e.to_string()))?;
 
             // Insert each metric
             for metric in chunk {
                 let params = self.metric_to_params(metric);
-                let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Send + Sync)> =
-                    params.iter().map(|p| p.as_ref()).collect();
+                let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params.iter()
+                    .map(AsRef::as_ref)
+                    .collect();
 
-                tx.execute(&stmt, &params_refs).await
-                    .map_err(|e| AgentError::Database(e))?;
+                tx.execute(&stmt, &params_refs[..]).await
+                    .map_err(|e| AgentError::Database(e.to_string()))?;
             }
 
             // Commit the transaction
             tx.commit().await
-                .map_err(|e| AgentError::Database(e))?;
+                .map_err(|e| AgentError::Database(e.to_string()))?;
 
             stored_count += chunk.len();
         }
@@ -680,12 +741,13 @@ where
 
         // Convert entity to parameters
         let params = self.entity_to_params(entity);
-        let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Send + Sync)> =
-            params.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params.iter()
+            .map(AsRef::as_ref)
+            .collect();
 
         // Execute statement
-        pool_client.execute(&stmt, &params_refs).await
-            .map_err(|e| AgentError::Database(e))?;
+        pool_client.execute(&stmt, &params_refs[..]).await
+            .map_err(|e| AgentError::Database(e.to_string()))?;
 
         Ok(())
     }
@@ -706,7 +768,7 @@ where
         let id_str = format!("{:?}", id);
 
         let row = self.client.query_opt(&stmt, &[&id_str]).await
-            .map_err(|e| AgentError::Database(e))?;
+            .map_err(|e| AgentError::Database(e.to_string()))?;
 
         match row {
             Some(_row) => {
@@ -727,7 +789,7 @@ where
         };
 
         let row = self.client.query_opt(&stmt, &[&name]).await
-            .map_err(|e| AgentError::Database(e))?;
+            .map_err(|e| AgentError::Database(e.to_string()))?;
 
         match row {
             Some(_row) => {
@@ -750,7 +812,7 @@ where
         let id_str = format!("{:?}", id);
 
         let row = self.client.query_opt(&stmt, &[&id_str]).await
-            .map_err(|e| AgentError::Database(e))?;
+            .map_err(|e| AgentError::Database(e.to_string()))?;
 
         Ok(row.is_some())
     }
@@ -758,7 +820,7 @@ where
     async fn health_check(&self) -> Result<bool> {
         // Simple query to check connection health
         let row = self.client.query_one("SELECT 1", &[]).await
-            .map_err(|e| AgentError::Database(e))?;
+            .map_err(|e| AgentError::Database(e.to_string()))?;
 
         let value: i32 = row.get(0);
         Ok(value == 1)
