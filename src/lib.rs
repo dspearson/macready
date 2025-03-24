@@ -1,4 +1,3 @@
-
 use log::debug;
 
 #[cfg(feature = "buffer")]
@@ -13,8 +12,12 @@ pub mod error;
 #[cfg(feature = "process")]
 pub mod process;
 pub mod retry;
+#[cfg(feature = "source")]
+pub mod source;
 #[cfg(feature = "storage")]
 pub mod storage;
+#[cfg(feature = "transformer")]
+pub mod transformer;
 pub mod util;
 
 // Re-export public types for external use
@@ -28,6 +31,12 @@ pub use buffer::MetricsBuffer;
 #[cfg(feature = "collector")]
 pub use collector::{Collector, MetricBatch, MetricPoint};
 
+#[cfg(feature = "source")]
+pub use source::MetricSource;
+
+#[cfg(feature = "transformer")]
+pub use transformer::MetricTransformer;
+
 #[cfg(all(feature = "storage", feature = "postgres"))]
 pub use storage::postgres_impl::{PostgresBatchExt, PostgresStorage, PostgresStorageExt};
 
@@ -37,6 +46,18 @@ pub use storage::memory::MemoryStorage;
 /// Reexport all error types and common interfaces
 pub mod prelude {
     pub use crate::error::{AgentError, Result};
+
+    #[cfg(feature = "collector")]
+    pub use crate::collector::{Collector, MetricBatch, MetricPoint};
+
+    #[cfg(feature = "source")]
+    pub use crate::source::MetricSource;
+
+    #[cfg(feature = "transformer")]
+    pub use crate::transformer::MetricTransformer;
+
+    #[cfg(feature = "entity")]
+    pub use crate::entity::Entity;
 }
 
 /// Initialize the logging system

@@ -1,5 +1,3 @@
-// src/transformer.rs
-
 use crate::error::Result;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -20,8 +18,8 @@ pub trait MetricTransformer<I, O>: Send + Sync + 'static {
 /// A simple transformer that applies a function to each input
 pub struct FunctionTransformer<I, O, F>
 where
-    I: Send + 'static,
-    O: Send + 'static,
+    I: Send + Sync + 'static,
+    O: Send + Sync + 'static,
     F: Fn(I) -> Result<Vec<O>> + Send + Sync + 'static,
 {
     /// The transformation function
@@ -36,8 +34,8 @@ where
 
 impl<I, O, F> FunctionTransformer<I, O, F>
 where
-    I: Send + 'static,
-    O: Send + 'static,
+    I: Send + Sync + 'static,
+    O: Send + Sync + 'static,
     F: Fn(I) -> Result<Vec<O>> + Send + Sync + 'static,
 {
     /// Create a new function transformer
@@ -54,8 +52,8 @@ where
 #[async_trait::async_trait]
 impl<I, O, F> MetricTransformer<I, O> for FunctionTransformer<I, O, F>
 where
-    I: Send + 'static,
-    O: Send + 'static,
+    I: Send + Sync + 'static,
+    O: Send + Sync + 'static,
     F: Fn(I) -> Result<Vec<O>> + Send + Sync + 'static,
 {
     async fn transform(&self, input: I) -> Result<Vec<O>> {
@@ -99,9 +97,9 @@ impl<I, M, O> ChainedTransformer<I, M, O> {
 #[async_trait::async_trait]
 impl<I, M, O> MetricTransformer<I, O> for ChainedTransformer<I, M, O>
 where
-    I: Send + 'static,
-    M: Send + Debug + 'static,
-    O: Send + 'static,
+    I: Send + Sync + 'static,
+    M: Send + Sync + Debug + 'static,
+    O: Send + Sync + 'static,
 {
     async fn transform(&self, input: I) -> Result<Vec<O>> {
         // Apply the first transformer
@@ -129,8 +127,8 @@ where
 /// A transformer that filters metrics
 pub struct FilteredTransformer<I, O, F>
 where
-    I: Send + 'static,
-    O: Send + 'static,
+    I: Send + Sync + 'static,
+    O: Send + Sync + 'static,
     F: Fn(&I) -> bool + Send + Sync + 'static,
 {
     /// The inner transformer
@@ -143,8 +141,8 @@ where
 
 impl<I, O, F> FilteredTransformer<I, O, F>
 where
-    I: Send + 'static,
-    O: Send + 'static,
+    I: Send + Sync + 'static,
+    O: Send + Sync + 'static,
     F: Fn(&I) -> bool + Send + Sync + 'static,
 {
     /// Create a new filtered transformer
@@ -164,8 +162,8 @@ where
 #[async_trait::async_trait]
 impl<I, O, F> MetricTransformer<I, O> for FilteredTransformer<I, O, F>
 where
-    I: Send + 'static,
-    O: Send + 'static,
+    I: Send + Sync + 'static,
+    O: Send + Sync + 'static,
     F: Fn(&I) -> bool + Send + Sync + 'static,
 {
     async fn transform(&self, input: I) -> Result<Vec<O>> {
@@ -198,8 +196,8 @@ impl TransformerBuilder {
         transform_fn: F,
     ) -> FunctionTransformer<I, O, F>
     where
-        I: Send + 'static,
-        O: Send + 'static,
+        I: Send + Sync + 'static,
+        O: Send + Sync + 'static,
         F: Fn(I) -> Result<Vec<O>> + Send + Sync + 'static,
     {
         FunctionTransformer::new(name, source, transform_fn)
@@ -221,8 +219,8 @@ impl TransformerBuilder {
         filter: F,
     ) -> FilteredTransformer<I, O, F>
     where
-        I: Send + 'static,
-        O: Send + 'static,
+        I: Send + Sync + 'static,
+        O: Send + Sync + 'static,
         F: Fn(&I) -> bool + Send + Sync + 'static,
     {
         FilteredTransformer::new(name, inner, filter)

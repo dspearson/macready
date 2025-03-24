@@ -29,7 +29,7 @@ hostname = "0.3.1"
 deadpool-postgres = "0.14.1"
 
 [features]
-default = ["buffer", "collector", "storage", "postgres", "process", "connection"]
+default = ["buffer", "collector", "storage", "postgres", "process", "connection", "source", "transformer"]
 buffer = []
 collector = []
 connection = []
@@ -38,6 +38,9 @@ postgres = ["storage"]
 memory = ["storage"]
 process = []
 memory-storage = ["memory"]
+source = []
+transformer = []
+entity = []
 
 [[example]]
 name = "network_metrics"

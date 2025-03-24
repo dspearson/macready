@@ -10,14 +10,14 @@ use crate::transformer::MetricTransformer;
 /// A collector that combines a source and a transformer
 pub struct CombinedCollector<I, O>
 where
-    I: Send + 'static,
+    I: Send + Sync + 'static,
     O: MetricType,
 {
     /// The source of raw metrics
     source: Box<dyn MetricSource<Output = I>>,
 
     /// The transformer to convert raw metrics
-    transformer: Box<dyn MetricTransformer<I, O>>,
+    transformer: Arc<dyn MetricTransformer<I, O>>,
 
     /// Name of this collector
     name: String,
@@ -31,7 +31,7 @@ where
 
 impl<I, O> CombinedCollector<I, O>
 where
-    I: Send + 'static,
+    I: Send + Sync + 'static,
     O: MetricType,
 {
     /// Create a new combined collector
@@ -42,7 +42,7 @@ where
     ) -> Self {
         Self {
             source: Box::new(source),
-            transformer: Box::new(transformer),
+            transformer: Arc::new(transformer),
             name: name.into(),
             running: Arc::new(RwLock::new(false)),
             _phantom: PhantomData,
@@ -53,7 +53,7 @@ where
 #[async_trait::async_trait]
 impl<I, O> Collector for CombinedCollector<I, O>
 where
-    I: Send + 'static,
+    I: Send + Sync + 'static,
     O: MetricType,
 {
     type MetricType = O;
@@ -71,8 +71,8 @@ where
         let (tx, rx) = mpsc::channel(100);
 
         // Clone things needed for the task
-        let transformer = self.transformer.clone();
-        let running = self.running.clone();
+        let transformer = Arc::clone(&self.transformer);
+        let running = Arc::clone(&self.running);
         let source_name = self.source.name().to_string();
 
         // Start the processing task
