@@ -3,11 +3,10 @@ use native_tls::{Certificate, Identity, TlsConnector};
 use postgres_native_tls::MakeTlsConnector;
 use std::fs;
 use std::path::Path;
-use std::time::Duration;
 
 use crate::config::{DatabaseConfig, SslMode};
-use crate::prelude::{AgentError, Result};
 use crate::connection::health::HealthCheck;
+use crate::prelude::{AgentError, Result};
 
 /// PostgreSQL connection provider
 pub struct PostgresProvider {
@@ -35,7 +34,7 @@ impl PostgresProvider {
             .map_err(|e| AgentError::Database(format!("Failed to execute test query: {}", e)))?;
 
         info!("Successfully connected to PostgreSQL database: {}:{}/{}",
-            config.host, config.port, config.database);
+            config.host, config.port, config.name);
 
         Ok(Self {
             config,
@@ -51,7 +50,7 @@ impl PostgresProvider {
         pg_config
             .host(&config.host)
             .port(config.port)
-            .dbname(&config.database)
+            .dbname(&config.name) // Changed from database to name
             .user(&config.username)
             .password(&config.password);
 
@@ -113,10 +112,23 @@ impl PostgresProvider {
     }
 
     /// Begin a transaction
-    pub async fn transaction(&self) -> Result<deadpool_postgres::Transaction> {
-        let client = self.get_client().await?;
-        client.transaction().await
-            .map_err(|e| AgentError::Database(format!("Failed to begin transaction: {}", e)))
+    pub async fn with_transaction<F, R>(&self, f: F) -> Result<R>
+    where
+        F: for<'a> FnOnce(&'a mut deadpool_postgres::Transaction<'_>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R>> + Send + 'a>>,
+        R: Send + 'static,
+    {
+        let mut client = self.get_client().await?;
+        let mut tx = client.transaction().await
+                                         .map_err(|e| AgentError::Database(format!("Failed to begin transaction: {}", e)))?;
+
+        // Execute the function with the transaction
+        let result = f(&mut tx).await?;
+
+        // Commit the transaction
+        tx.commit().await
+                   .map_err(|e| AgentError::Database(format!("Failed to commit transaction: {}", e)))?;
+
+        Ok(result)
     }
 
     /// Provider name
