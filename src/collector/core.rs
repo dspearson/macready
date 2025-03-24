@@ -38,7 +38,6 @@ pub trait MetricPoint: Clone + Send + Sync + Debug + 'static {
     }
 }
 
-
 /// A batch of metrics
 #[derive(Debug, Clone)]
 pub struct MetricBatch<T: MetricType> {

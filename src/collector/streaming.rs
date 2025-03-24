@@ -1,9 +1,9 @@
-use std::sync::Arc;
-use std::pin::Pin;
-use tokio::sync::RwLock;
-use super::core::{Collector, MetricBatch, MetricType};
 use super::config::CollectorConfig;
+use super::core::{Collector, MetricBatch, MetricType};
 use crate::error::Result;
+use std::pin::Pin;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 
 /// A collector that streams metrics continuously
@@ -22,9 +22,15 @@ pub struct BaseStreamingCollector<T: MetricType> {
     /// The collector configuration
     config: CollectorConfig,
     /// The initialization function
-    init_fn: Box<dyn Fn() ->Pin<Box<dyn std::future::Future<Output = Result<mpsc::Receiver<T>>> + Send>> + Send + Sync>,
+    init_fn: Box<
+        dyn Fn() -> Pin<Box<dyn std::future::Future<Output = Result<mpsc::Receiver<T>>> + Send>>
+            + Send
+            + Sync,
+    >,
     /// The cleanup function
-    cleanup_fn: Box<dyn Fn() ->Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> + Send + Sync>,
+    cleanup_fn: Box<
+        dyn Fn() -> Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> + Send + Sync,
+    >,
     /// Whether the collector is running
     running: Arc<RwLock<bool>>,
 }
@@ -32,14 +38,16 @@ pub struct BaseStreamingCollector<T: MetricType> {
 #[allow(dead_code)]
 impl<T: MetricType> BaseStreamingCollector<T> {
     /// Create a new base streaming collector
-    pub fn new<I, C>(
-        config: CollectorConfig,
-        init_fn: I,
-        cleanup_fn: C,
-    ) -> Self
+    pub fn new<I, C>(config: CollectorConfig, init_fn: I, cleanup_fn: C) -> Self
     where
-        I: Fn() ->Pin<Box<dyn std::future::Future<Output = Result<mpsc::Receiver<T>>> + Send>> + Send + Sync + 'static,
-        C: Fn() ->Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> + Send + Sync + 'static,
+        I: Fn() -> Pin<Box<dyn std::future::Future<Output = Result<mpsc::Receiver<T>>> + Send>>
+            + Send
+            + Sync
+            + 'static,
+        C: Fn() -> Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>
+            + Send
+            + Sync
+            + 'static,
     {
         Self {
             config,
