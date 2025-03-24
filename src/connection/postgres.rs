@@ -1,191 +1,199 @@
-use log::{debug, info};
+use log::{debug, info, warn};
 use native_tls::{Certificate, Identity, TlsConnector};
+use postgres_native_tls::MakeTlsConnector;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
 use crate::config::{DatabaseConfig, SslMode};
 use crate::prelude::{AgentError, Result};
-use crate::connection::health::Health;
+use crate::connection::health::HealthCheck;
 
-/// PostgreSQL connection
-pub struct PostgresConnection {
-    /// Connection string
-    config_string: String,
-    /// Connection configuration
+/// PostgreSQL connection provider
+pub struct PostgresProvider {
     config: DatabaseConfig,
+    name: String,
+    pool: deadpool_postgres::Pool,
 }
 
-impl PostgresConnection {
-    /// Create a new PostgreSQL connection
-    pub fn new(config: DatabaseConfig) -> Self {
-        let config_string = format!(
-            "host={} port={} dbname={} user={} password={}",
-            config.host, config.port, config.name, config.username, config.password
-        );
+impl PostgresProvider {
+    /// Create a new PostgreSQL connection provider
+    pub async fn new(config: DatabaseConfig, name: impl Into<String>) -> Result<Self> {
+        let name = name.into();
+        debug!("Creating PostgreSQL provider: {}", &name);
 
-        Self {
-            config_string,
-            config,
-        }
-    }
+        // Create the pool
+        let pool = Self::create_pool(&config)?;
 
-    /// Connect to the database
-    pub async fn connect(&self) -> Result<tokio_postgres::Client> {
-        debug!("Connecting to database: {}", self.config_string);
-
-        // Create a connection pool
-        let pool = deadpool_postgres::Pool::builder()
-            .max_size(10)
-            .connect_timeout(Duration::from_secs(5))
-            .build(self.create_manager()?)
-            .map_err(|e| AgentError::Connection(format!("Failed to create connection pool: {}", e)))?;
-
-        // Get a client from the pool
+        // Test connection
         let client = pool.get().await
             .map_err(|e| AgentError::Connection(format!("Failed to connect to database: {}", e)))?;
 
-        // Test the connection
-        client
-            .execute("SELECT 1", &[])
+        // Test basic query
+        client.execute("SELECT 1", &[])
             .await
-            .map_err(|e| AgentError::Connection(format!("Failed to execute test query: {}", e)))?;
+            .map_err(|e| AgentError::Database(format!("Failed to execute test query: {}", e)))?;
 
-        info!("Connected to database: {}", self.config_string);
+        info!("Successfully connected to PostgreSQL database: {}:{}/{}",
+            config.host, config.port, config.database);
 
-        // Return a new client
-        pool.get().await
+        Ok(Self {
+            config,
+            name,
+            pool,
+        })
+    }
+
+    /// Create a connection pool
+    fn create_pool(config: &DatabaseConfig) -> Result<deadpool_postgres::Pool> {
+        // Create PostgreSQL config
+        let mut pg_config = tokio_postgres::Config::new();
+        pg_config
+            .host(&config.host)
+            .port(config.port)
+            .dbname(&config.database)
+            .user(&config.username)
+            .password(&config.password);
+
+        // Create the pool builder based on SSL mode
+        let builder = match config.ssl_mode {
+            SslMode::Disable => {
+                debug!("Creating PostgreSQL pool with SSL disabled");
+                let manager = deadpool_postgres::Manager::new(pg_config, tokio_postgres::NoTls);
+                deadpool_postgres::Pool::builder(manager)
+            },
+            _ => {
+                debug!("Creating PostgreSQL pool with SSL enabled (mode: {:?})", config.ssl_mode);
+                let connector = build_tls_connector(config)?;
+                let tls = MakeTlsConnector::new(connector);
+                let manager = deadpool_postgres::Manager::new(pg_config, tls);
+                deadpool_postgres::Pool::builder(manager)
+            }
+        };
+
+        // Build the pool
+        builder
+            .max_size(10)
+            .build()
+            .map_err(|e| AgentError::Connection(format!("Failed to create connection pool: {}", e)))
+    }
+
+    /// Get a client from the pool
+    pub async fn get_client(&self) -> Result<deadpool_postgres::Client> {
+        self.pool.get().await
             .map_err(|e| AgentError::Connection(format!("Failed to get client from pool: {}", e)))
     }
 
-    /// Create a connection manager
-    fn create_manager(&self) -> Result<deadpool_postgres::Manager<tokio_postgres::NoTls>> {
-        let mut config = tokio_postgres::config::Config::new();
-        config
-            .host(&self.config.host)
-            .port(self.config.port)
-            .dbname(&self.config.name)
-            .user(&self.config.username)
-            .password(&self.config.password)
-            .connect_timeout(Duration::from_secs(5));
-
-        // Create the manager
-        let manager = deadpool_postgres::Manager::new(config, tokio_postgres::NoTls);
-
-        Ok(manager)
+    /// Execute a query with error handling
+    pub async fn execute(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<u64> {
+        let client = self.get_client().await?;
+        client.execute(sql, params).await
+            .map_err(|e| AgentError::Database(format!("Query execution error: {}", e)))
     }
 
-    /// Create a TLS connection
-    async fn connect_with_tls(&self) -> Result<tokio_postgres::Client> {
-        // Build TLS connector
-        let connector = match &self.config.ssl_mode {
-            SslMode::Disable => {
-                return self.connect_without_tls().await;
-            }
-            _ => {
-                // Build TLS connector
-                if self.config.ca_cert.is_none() && self.config.client_cert.is_none() {
-                    return Err(AgentError::Connection("Invalid SSL mode configuration".to_string()));
-                }
-
-                // Build TLS connector
-                let mut builder = TlsConnector::builder();
-                builder.build().map_err(|e| AgentError::Tls(e.to_string()))?
-            }
-        };
-
-        // Parse connection string
-        let config_string = self.config_string.clone();
-        debug!("Connecting to database with TLS: {}", config_string);
-
-        // Connect
-        let config = self.config_string.parse::<tokio_postgres::Config>()
-            .map_err(|e| AgentError::Connection(format!("Failed to parse connection string: {}", e)))?;
-
-        // Set SSL mode
-        let ssl_mode = match self.config.ssl_mode {
-            SslMode::Disable => "disable",
-            SslMode::Allow => "allow",
-            SslMode::Prefer => "prefer",
-            SslMode::Require => "require",
-            SslMode::VerifyCa => "verify-ca",
-            SslMode::VerifyFull => "verify-full",
-        };
-
-        // Add SSL mode to config string
-        let config_string = format!("{} sslmode={}", config_string, ssl_mode);
-        debug!("Connecting with SSL mode: {}", ssl_mode);
-
-        // Parse config
-        let config = config_string.parse::<tokio_postgres::Config>()
-            .map_err(|e| AgentError::Connection(format!("Failed to parse connection string: {}", e)))?;
-
-        // Create TLS connector
-        let tls = tokio_postgres::tls::MakeTlsConnector::new(connector);
-
-        // Connect
-        let (client, connection) = tokio_postgres::connect(&config_string, tls)
-            .await
-            .map_err(|e| AgentError::Connection(format!("Failed to connect to database: {}", e)))?;
-
-        // Spawn connection
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("Connection error: {}", e);
-            }
-        });
-
-        Ok(client)
+    /// Execute a query and get rows
+    pub async fn query(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<Vec<tokio_postgres::Row>> {
+        let client = self.get_client().await?;
+        client.query(sql, params).await
+            .map_err(|e| AgentError::Database(format!("Query error: {}", e)))
     }
 
-    /// Connect without TLS
-    async fn connect_without_tls(&self) -> Result<tokio_postgres::Client> {
-        // Parse connection string
-        let config_string = self.config_string.clone();
-        debug!("Connecting to database without TLS: {}", config_string);
+    /// Query for a single row
+    pub async fn query_one(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<tokio_postgres::Row> {
+        let client = self.get_client().await?;
+        client.query_one(sql, params).await
+            .map_err(|e| AgentError::Database(format!("Query one error: {}", e)))
+    }
 
-        // Connect
-        let (client, connection) = tokio_postgres::connect(&config_string, tokio_postgres::NoTls)
-            .await
-            .map_err(|e| AgentError::Connection(format!("Failed to connect to database: {}", e)))?;
+    /// Query for an optional row
+    pub async fn query_opt(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<Option<tokio_postgres::Row>> {
+        let client = self.get_client().await?;
+        client.query_opt(sql, params).await
+            .map_err(|e| AgentError::Database(format!("Query opt error: {}", e)))
+    }
 
-        // Spawn connection
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("Connection error: {}", e);
-            }
-        });
+    /// Begin a transaction
+    pub async fn transaction(&self) -> Result<deadpool_postgres::Transaction> {
+        let client = self.get_client().await?;
+        client.transaction().await
+            .map_err(|e| AgentError::Database(format!("Failed to begin transaction: {}", e)))
+    }
 
-        Ok(client)
+    /// Provider name
+    pub fn name(&self) -> &str {
+        &self.name
     }
 }
 
-impl Health for PostgresConnection {
-    async fn check_health(&self, timeout: Duration) -> Result<bool> {
-        // Create a simple client
-        let client = self.connect().await;
-
-        // Check if connection succeeded
-        match client {
-            Ok(_) => Ok(true),
+#[async_trait::async_trait]
+impl HealthCheck for PostgresProvider {
+    async fn check_health(&self) -> Result<bool> {
+        match self.get_client().await {
+            Ok(client) => {
+                match client.execute("SELECT 1", &[]).await {
+                    Ok(_) => Ok(true),
+                    Err(e) => {
+                        warn!("Database health check failed: {}", e);
+                        Ok(false)
+                    }
+                }
+            },
             Err(e) => {
-                debug!("Health check failed: {}", e);
-                Err(AgentError::Connection(format!("Database validation failed: {}", e)))
+                warn!("Database connection failed: {}", e);
+                Ok(false)
             }
         }
     }
 
-    async fn check_health_with_timeout(&self, timeout: Duration) -> Result<bool> {
-        // Create a timeout
-        let timeout_future = tokio::time::sleep(timeout);
-        let health_future = self.check_health(timeout);
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
 
-        // Wait for either the health check or the timeout
-        tokio::select! {
-            health = health_future => health,
-            _ = timeout_future => Err(AgentError::Timeout(format!("Database validation timed out after {} seconds", timeout.as_secs())))
+/// Build a TLS connector from a database config
+fn build_tls_connector(config: &DatabaseConfig) -> Result<TlsConnector> {
+    let mut builder = TlsConnector::builder();
+
+    // Add CA certificate if provided
+    if let Some(ca_cert_path) = &config.ca_cert {
+        let ca_cert = load_certificate(ca_cert_path)?;
+        builder.add_root_certificate(ca_cert);
+    }
+
+    // Add client certificate if provided
+    if let Some(client_cert_path) = &config.client_cert {
+        if let Some(client_key_path) = &config.client_key {
+            let identity = load_identity(client_cert_path, client_key_path)?;
+            builder.identity(identity);
+        } else {
+            return Err(AgentError::Tls("Client key not provided".to_string()));
         }
     }
+
+    // Set minimum protocol version based on SSL mode
+    match config.ssl_mode {
+        SslMode::VerifyCa | SslMode::VerifyFull => {
+            builder.danger_accept_invalid_certs(false);
+        }
+        _ => {
+            builder.danger_accept_invalid_certs(true);
+        }
+    }
+
+    builder.build().map_err(|e| AgentError::Tls(e.to_string()))
+}
+
+/// Load a certificate from a file
+pub fn load_certificate<P: AsRef<Path>>(path: P) -> Result<Certificate> {
+    let cert_data = fs::read(path)?;
+    Certificate::from_pem(&cert_data).map_err(|e| AgentError::Tls(e.to_string()))
+}
+
+/// Load an identity from certificate and key files
+pub fn load_identity<P: AsRef<Path>>(cert_path: P, key_path: P) -> Result<Identity> {
+    let cert_data = fs::read(cert_path)?;
+    let key_data = fs::read(key_path)?;
+    Identity::from_pkcs8(&cert_data, &key_data).map_err(|e| AgentError::Tls(e.to_string()))
 }
 
 /// Parse SSL mode from a string
@@ -199,17 +207,4 @@ pub fn parse_ssl_mode(s: &str) -> Result<SslMode> {
         "verify-full" => Ok(SslMode::VerifyFull),
         _ => Err(AgentError::Config(format!("Invalid SSL mode: {}", s))),
     }
-}
-
-/// Load a certificate from a file
-pub fn load_certificate<P: AsRef<Path>>(path: P) -> Result<Certificate> {
-    let cert_data = fs::read(path)?;
-    Certificate::from_pem(&cert_data).map_err(|e| AgentError::Tls(e.to_string()))
-}
-
-/// Load an identity from certificate and key files
-pub fn load_identity<P: AsRef<Path>>(cert_path: P, key_path: P, password: &str) -> Result<Identity> {
-    let cert_data = fs::read(&cert_path)?;
-    let key_data = fs::read(&key_path)?;
-    Identity::from_pkcs8(&cert_data, &key_data, password).map_err(|e| AgentError::Tls(e.to_string()))
 }
