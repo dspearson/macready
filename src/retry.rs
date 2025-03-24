@@ -6,7 +6,7 @@ use tokio::time::sleep;
 
 use crate::error::{AgentError, Result};
 
-/// Configuration for retry behavior
+/// Configuration for retry behaviour
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts

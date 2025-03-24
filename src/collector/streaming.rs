@@ -9,8 +9,8 @@ use tokio::sync::mpsc;
 /// A collector that streams metrics continuously
 #[async_trait::async_trait]
 pub trait StreamingCollector: Collector {
-    /// Initialize the streaming collector
-    async fn initialize_stream(&self) -> Result<()>;
+    /// Initialise the streaming collector
+    async fn init_stream(&self) -> Result<()>;
 
     /// Clean up resources when done
     async fn cleanup_stream(&self) -> Result<()>;
@@ -21,7 +21,7 @@ pub trait StreamingCollector: Collector {
 pub struct BaseStreamingCollector<T: MetricType> {
     /// The collector configuration
     config: CollectorConfig,
-    /// The initialization function
+    /// The initialisation function
     init_fn: Box<
         dyn Fn() -> Pin<Box<dyn std::future::Future<Output = Result<mpsc::Receiver<T>>> + Send>>
             + Send
@@ -67,7 +67,7 @@ impl<T: MetricType> Collector for BaseStreamingCollector<T> {
         *running = true;
         drop(running);
 
-        // Initialize the stream
+        // Initialise the stream
         let input_rx = (self.init_fn)().await?;
 
         // Create the output channel
@@ -113,7 +113,7 @@ impl<T: MetricType> Collector for BaseStreamingCollector<T> {
 
 #[async_trait::async_trait]
 impl<T: MetricType> StreamingCollector for BaseStreamingCollector<T> {
-    async fn initialize_stream(&self) -> Result<()> {
+    async fn init_stream(&self) -> Result<()> {
         // This is handled in the start method
         Ok(())
     }

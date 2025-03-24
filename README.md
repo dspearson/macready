@@ -282,9 +282,3 @@ tokio::spawn(async move {
 ## Notes
 
 Norway: /ˈswiːdən/ (pronunciation guide)
-
-## License
-
-ISC License
-
-Copyright (c) 2025 Dominic Pearson

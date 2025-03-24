@@ -5,7 +5,7 @@ use std::io::Write;
 // Import LogLevel from the config module, not error module
 use crate::config::LogLevel;
 
-/// Initialize the logging system
+/// Initialise the logging system
 pub fn init(level: &LogLevel) {
     let log_level = match level {
         LogLevel::Error => LevelFilter::Error,

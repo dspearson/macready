@@ -60,8 +60,8 @@ pub mod prelude {
     pub use crate::entity::Entity;
 }
 
-/// Initialize the logging system
+/// Initialise the logging system
 pub fn init_logging(log_level: &config::LogLevel) {
-    debug!("Initializing logging with level: {:?}", log_level);
+    debug!("Initialising logging with level: {:?}", log_level);
     util::logging::init(log_level);
 }

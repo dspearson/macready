@@ -7,8 +7,8 @@ use tokio::sync::RwLock;
 /// A provider of context information needed for metric collection
 #[async_trait::async_trait]
 pub trait ContextProvider: Send + Sync + 'static {
-    /// Initialize the context provider
-    async fn initialize(&self) -> Result<()> {
+    /// Initialise the context provider
+    async fn init(&self) -> Result<()> {
         Ok(()) // Default no-op implementation
     }
 
@@ -57,12 +57,12 @@ impl ContextManager {
         *running = true;
         drop(running);
 
-        // Initialize and start each provider
+        // Initialise and start each provider
         for provider in &self.providers {
             let provider_clone = Arc::clone(provider);
 
-            // Initialize the provider
-            provider_clone.initialize().await?;
+            // Initialise the provider
+            provider_clone.init().await?;
 
             // Start the provider in its own task
             let handle = tokio::spawn({
@@ -74,7 +74,7 @@ impl ContextManager {
 
                     log::info!("Starting context provider: {}", provider.name());
 
-                    // Initialize
+                    // Initialise
                     if let Err(e) = provider.update().await {
                         log::error!("Error during initial context update for {}: {}", provider.name(), e);
                     }
