@@ -1,13 +1,12 @@
+use crate::entity::Entity;
+use crate::error::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use crate::entity::Entity;
-use crate::error::{AgentError, Result};
 
 /// Trait for a single metric point
 pub trait MetricPoint: Clone + Send + Sync + Debug + 'static {

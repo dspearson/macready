@@ -1,10 +1,12 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use metrics_agent_core::prelude::*;
 use metrics_agent_core::buffer::MetricsBuffer;
 use metrics_agent_core::collector::{Collector, CollectorBuilder, MetricBatch, MetricPoint};
-use metrics_agent_core::connection::postgres::{establish_connection, PgConfig, PgConfigBuilder, SslMode};
+use metrics_agent_core::connection::postgres::{
+    PgConfig, PgConfigBuilder, SslMode, establish_connection,
+};
 use metrics_agent_core::entity::{Entity, EntityRegistry};
+use metrics_agent_core::prelude::*;
 use metrics_agent_core::retry::RetryBuilder;
 use metrics_agent_core::storage::memory::MemoryStorage;
 use std::collections::HashMap;
@@ -129,7 +131,9 @@ impl NetworkMetricsCollector {
 impl Collector for NetworkMetricsCollector {
     type MetricType = NetworkMetric;
 
-    async fn start(&self) -> metrics_agent_core::error::Result<mpsc::Receiver<MetricBatch<Self::MetricType>>> {
+    async fn start(
+        &self,
+    ) -> metrics_agent_core::error::Result<mpsc::Receiver<MetricBatch<Self::MetricType>>> {
         let (tx, rx) = mpsc::channel(self.config.buffer_size);
 
         // Spawn a task to simulate metric collection
@@ -217,7 +221,9 @@ async fn main() -> metrics_agent_core::error::Result<()> {
     let buffer = Arc::new(MetricsBuffer::<NetworkMetric>::new());
 
     // Create a memory storage backend for this example
-    let storage = Arc::new(MemoryStorage::<NetworkMetric, NetworkInterface>::new("example_storage"));
+    let storage = Arc::new(MemoryStorage::<NetworkMetric, NetworkInterface>::new(
+        "example_storage",
+    ));
 
     // Start the collector
     let collector = NetworkMetricsCollector::new();
@@ -269,7 +275,7 @@ async fn main() -> metrics_agent_core::error::Result<()> {
                     } else {
                         log::debug!("Stored metric for {}", entity_name);
                     }
-                },
+                }
                 Err(_) => {
                     // We don't know this entity yet, buffer the metric
                     log::debug!("Buffering metric for unknown entity: {}", entity_name);
@@ -287,7 +293,11 @@ async fn main() -> metrics_agent_core::error::Result<()> {
                 let buffered_metrics = buffer.take_for_entity(&entity_name).unwrap();
 
                 if !buffered_metrics.is_empty() {
-                    log::info!("Processing {} buffered metrics for {}", buffered_metrics.len(), entity_name);
+                    log::info!(
+                        "Processing {} buffered metrics for {}",
+                        buffered_metrics.len(),
+                        entity_name
+                    );
 
                     // Update metrics with entity ID and store them
                     for metric in buffered_metrics {

@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use log::debug;
 use tokio::sync::mpsc;
 
 use super::error::{ProcessError, ProcessResult};
@@ -79,7 +78,7 @@ where
         loop {
             match self.rx.recv().await {
                 Some(line) => {
-                    let mut filter = &mut self.filter;
+                    let filter = &mut self.filter;
                     if filter(&line) {
                         return Some(line);
                     }
@@ -263,10 +262,10 @@ where
                                 return Some(Ok(record));
                             }
                             // Record didn't pass the filter, continue
-                        },
+                        }
                         Ok(None) => {
                             // Parser skipped this line, continue
-                        },
+                        }
                         Err(e) => return Some(Err(e)),
                     }
                 }
@@ -333,10 +332,10 @@ where
                     match self.parser.parse(&line) {
                         Ok(Some(record)) => {
                             return Some(Ok((self.map_fn)(record)));
-                        },
+                        }
                         Ok(None) => {
                             // Parser skipped this line, continue
-                        },
+                        }
                         Err(e) => return Some(Err(e)),
                     }
                 }
@@ -413,7 +412,13 @@ impl<T: Send + 'static> StreamParser<T> for DelimitedTextParser<T> {
         // Parse the line into fields
         let fields: Vec<String> = line
             .split(self.delimiter)
-            .map(|s| if self.trim { s.trim().to_string() } else { s.to_string() })
+            .map(|s| {
+                if self.trim {
+                    s.trim().to_string()
+                } else {
+                    s.to_string()
+                }
+            })
             .collect();
 
         // Handle header line
@@ -481,8 +486,16 @@ impl<T: Send + 'static> StreamParser<T> for KeyValueParser<T> {
 
         for pair in line.split(self.pair_delimiter) {
             if let Some((key, value)) = pair.split_once(self.kv_delimiter) {
-                let key = if self.trim { key.trim().to_string() } else { key.to_string() };
-                let value = if self.trim { value.trim().to_string() } else { value.to_string() };
+                let key = if self.trim {
+                    key.trim().to_string()
+                } else {
+                    key.to_string()
+                };
+                let value = if self.trim {
+                    value.trim().to_string()
+                } else {
+                    value.to_string()
+                };
 
                 map.insert(key, value);
             }
@@ -556,7 +569,11 @@ impl<T: Send + 'static> StreamParser<T> for FixedWidthParser<T> {
                 ""
             };
 
-            fields.push(if self.trim { field.trim().to_string() } else { field.to_string() });
+            fields.push(if self.trim {
+                field.trim().to_string()
+            } else {
+                field.to_string()
+            });
             start += width;
         }
 
@@ -715,7 +732,9 @@ where
     F: Fn(&[String]) -> ProcessResult<T> + Send + Sync + 'static + Clone,
 {
     fn build(&self) -> Box<dyn StreamParser<T>> {
-        Box::new(DelimitedTextParser::new(self.delimiter, self.has_header, self.converter.clone())
-            .trim(self.trim))
+        Box::new(
+            DelimitedTextParser::new(self.delimiter, self.has_header, self.converter.clone())
+                .trim(self.trim),
+        )
     }
 }

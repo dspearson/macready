@@ -1,7 +1,6 @@
 use log::{debug, warn};
 use rand::random;
 use std::future::Future;
-use std::pin::Pin;
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -75,7 +74,7 @@ where
                 // Apply jitter if configured
                 if config.jitter {
                     delay = Duration::from_millis(
-                        next_delay_ms.min(config.max_delay_ms) + random::<u64>() % 100
+                        next_delay_ms.min(config.max_delay_ms) + random::<u64>() % 100,
                     );
                 } else {
                     delay = Duration::from_millis(next_delay_ms.min(config.max_delay_ms));
@@ -88,10 +87,7 @@ where
 }
 
 /// A simplified version of execute_with_retry that uses default config
-pub async fn retry<F, Fut, T, E>(
-    operation: F,
-    context: &str,
-) -> Result<T>
+pub async fn retry<F, Fut, T, E>(operation: F, context: &str) -> Result<T>
 where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = std::result::Result<T, E>> + Send,

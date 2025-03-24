@@ -5,7 +5,7 @@ use std::fmt;
 pub type Result<T> = std::result::Result<T, AgentError>;
 
 /// Agent error
-#[derive(Debug, Clone)]  // Added Clone trait
+#[derive(Debug, Clone)] // Added Clone trait
 pub enum AgentError {
     /// Database error
     Database(String),
@@ -40,7 +40,10 @@ pub enum AgentError {
 impl AgentError {
     /// Create a retry error
     pub fn retry(context: &str, attempts: usize, err: impl fmt::Display) -> Self {
-        AgentError::Retry(format!("{} failed after {} attempts: {}", context, attempts, err))
+        AgentError::Retry(format!(
+            "{} failed after {} attempts: {}",
+            context, attempts, err
+        ))
     }
 }
 

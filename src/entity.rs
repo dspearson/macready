@@ -59,8 +59,14 @@ impl<E: Entity> EntityRegistry<E> {
         let name = entity.name().to_string();
         let entity = Arc::new(entity);
 
-        let mut entities = self.entities.write().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
-        let mut names = self.name_index.write().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let mut entities = self
+            .entities
+            .write()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let mut names = self
+            .name_index
+            .write()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
 
         entities.insert(id.clone(), Arc::clone(&entity));
         names.insert(name, id);
@@ -74,8 +80,14 @@ impl<E: Entity> EntityRegistry<E> {
         let name = entity.name().to_string();
         let entity = Arc::new(entity);
 
-        let mut entities = self.entities.write().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
-        let mut names = self.name_index.write().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let mut entities = self
+            .entities
+            .write()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let mut names = self
+            .name_index
+            .write()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
 
         // Update the entity map
         entities.insert(id.clone(), Arc::clone(&entity));
@@ -104,35 +116,54 @@ impl<E: Entity> EntityRegistry<E> {
 
     /// Get an entity by ID
     pub fn get(&self, id: &E::Id) -> Result<Arc<E>> {
-        let entities = self.entities.read().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
-        entities.get(id)
+        let entities = self
+            .entities
+            .read()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        entities
+            .get(id)
             .cloned()
             .ok_or_else(|| AgentError::EntityNotFound(format!("Entity with ID {:?} not found", id)))
     }
 
     /// Get an entity by name
     pub fn get_by_name(&self, name: &str) -> Result<Arc<E>> {
-        let names = self.name_index.read().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
-        let entities = self.entities.read().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let names = self
+            .name_index
+            .read()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let entities = self
+            .entities
+            .read()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
 
-        let id = names.get(name)
-            .ok_or_else(|| AgentError::EntityNotFound(format!("Entity with name '{}' not found", name)))?;
+        let id = names.get(name).ok_or_else(|| {
+            AgentError::EntityNotFound(format!("Entity with name '{}' not found", name))
+        })?;
 
-        entities.get(id)
+        entities
+            .get(id)
             .cloned()
             .ok_or_else(|| AgentError::EntityNotFound(format!("Entity with ID {:?} not found", id)))
     }
 
     /// Get all entities
     pub fn get_all(&self) -> Result<Vec<Arc<E>>> {
-        let entities = self.entities.read().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let entities = self
+            .entities
+            .read()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
         Ok(entities.values().cloned().collect())
     }
 
     /// Get all entities of a specific type
     pub fn get_by_type(&self, entity_type: &str) -> Result<Vec<Arc<E>>> {
-        let entities = self.entities.read().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
-        Ok(entities.values()
+        let entities = self
+            .entities
+            .read()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        Ok(entities
+            .values()
             .filter(|e| e.entity_type() == entity_type)
             .cloned()
             .collect())
@@ -140,8 +171,12 @@ impl<E: Entity> EntityRegistry<E> {
 
     /// Get entities with a specific parent
     pub fn get_by_parent(&self, parent_id: &E::Id) -> Result<Vec<Arc<E>>> {
-        let entities = self.entities.read().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
-        Ok(entities.values()
+        let entities = self
+            .entities
+            .read()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        Ok(entities
+            .values()
             .filter(|e| e.parent_id().map_or(false, |id| id == parent_id))
             .cloned()
             .collect())
@@ -149,8 +184,14 @@ impl<E: Entity> EntityRegistry<E> {
 
     /// Remove an entity by ID
     pub fn remove(&self, id: &E::Id) -> Result<Option<Arc<E>>> {
-        let mut entities = self.entities.write().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
-        let mut names = self.name_index.write().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let mut entities = self
+            .entities
+            .write()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let mut names = self
+            .name_index
+            .write()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
 
         // Remove from name index first
         if let Some(entity) = entities.get(id) {
@@ -163,19 +204,28 @@ impl<E: Entity> EntityRegistry<E> {
 
     /// Count the number of entities
     pub fn count(&self) -> Result<usize> {
-        let entities = self.entities.read().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let entities = self
+            .entities
+            .read()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
         Ok(entities.len())
     }
 
     /// Check if an entity exists by ID
     pub fn contains(&self, id: &E::Id) -> Result<bool> {
-        let entities = self.entities.read().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let entities = self
+            .entities
+            .read()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
         Ok(entities.contains_key(id))
     }
 
     /// Check if an entity exists by name
     pub fn contains_name(&self, name: &str) -> Result<bool> {
-        let names = self.name_index.read().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let names = self
+            .name_index
+            .read()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
         Ok(names.contains_key(name))
     }
 }

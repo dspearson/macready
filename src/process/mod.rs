@@ -5,12 +5,12 @@
 //! metrics from command-line tools and system utilities.
 
 pub mod command;
-pub mod stream;
 pub mod error;
+pub mod stream;
 
 pub use command::{Command, CommandBuilder, ProcessHandle};
-pub use stream::{LineStream, RecordStream, StreamParser};
 pub use error::{ProcessError, ProcessResult};
+pub use stream::{LineStream, RecordStream, StreamParser};
 
 /// Trait for sources that provide metrics via external processes
 #[async_trait::async_trait]

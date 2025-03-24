@@ -123,7 +123,10 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<AgentConfig> {
     // Check if the file exists
     if !path.exists() {
         error!("Configuration file {} does not exist", path.display());
-        return Err(AgentError::Config(format!("Configuration file not found: {}", path.display())));
+        return Err(AgentError::Config(format!(
+            "Configuration file not found: {}",
+            path.display()
+        )));
     }
 
     // Get the file extension
@@ -131,7 +134,10 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<AgentConfig> {
         Some(ext) => ext.to_string_lossy().to_lowercase(),
         None => {
             error!("Configuration file has no extension");
-            return Err(AgentError::Config(format!("Configuration file has no extension: {}", path.display())));
+            return Err(AgentError::Config(format!(
+                "Configuration file has no extension: {}",
+                path.display()
+            )));
         }
     };
 
@@ -142,7 +148,10 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<AgentConfig> {
         "yaml" | "yml" => config::FileFormat::Yaml,
         format => {
             error!("Unsupported configuration format: {}", format);
-            return Err(AgentError::Config(format!("Unsupported config format: {}", format)));
+            return Err(AgentError::Config(format!(
+                "Unsupported config format: {}",
+                format
+            )));
         }
     };
 
@@ -153,6 +162,7 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<AgentConfig> {
         .map_err(|e| AgentError::Config(e.to_string()))?;
 
     // Deserialize configuration
-    config.try_deserialize()
+    config
+        .try_deserialize()
         .map_err(|e| AgentError::Config(e.to_string()))
 }

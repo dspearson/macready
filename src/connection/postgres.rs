@@ -10,7 +10,6 @@ use crate::prelude::{AgentError, Result};
 
 /// PostgreSQL connection provider
 pub struct PostgresProvider {
-    config: DatabaseConfig,
     name: String,
     pool: deadpool_postgres::Pool,
 }
@@ -25,22 +24,23 @@ impl PostgresProvider {
         let pool = Self::create_pool(&config)?;
 
         // Test connection
-        let client = pool.get().await
+        let client = pool
+            .get()
+            .await
             .map_err(|e| AgentError::Connection(format!("Failed to connect to database: {}", e)))?;
 
         // Test basic query
-        client.execute("SELECT 1", &[])
+        client
+            .execute("SELECT 1", &[])
             .await
             .map_err(|e| AgentError::Database(format!("Failed to execute test query: {}", e)))?;
 
-        info!("Successfully connected to PostgreSQL database: {}:{}/{}",
-            config.host, config.port, config.name);
+        info!(
+            "Successfully connected to PostgreSQL database: {}:{}/{}",
+            config.host, config.port, config.name
+        );
 
-        Ok(Self {
-            config,
-            name,
-            pool,
-        })
+        Ok(Self { name, pool })
     }
 
     /// Create a connection pool
@@ -60,9 +60,12 @@ impl PostgresProvider {
                 debug!("Creating PostgreSQL pool with SSL disabled");
                 let manager = deadpool_postgres::Manager::new(pg_config, tokio_postgres::NoTls);
                 deadpool_postgres::Pool::builder(manager)
-            },
+            }
             _ => {
-                debug!("Creating PostgreSQL pool with SSL enabled (mode: {:?})", config.ssl_mode);
+                debug!(
+                    "Creating PostgreSQL pool with SSL enabled (mode: {:?})",
+                    config.ssl_mode
+                );
                 let connector = build_tls_connector(config)?;
                 let tls = MakeTlsConnector::new(connector);
                 let manager = deadpool_postgres::Manager::new(pg_config, tls);
@@ -79,54 +82,87 @@ impl PostgresProvider {
 
     /// Get a client from the pool
     pub async fn get_client(&self) -> Result<deadpool_postgres::Client> {
-        self.pool.get().await
+        self.pool
+            .get()
+            .await
             .map_err(|e| AgentError::Connection(format!("Failed to get client from pool: {}", e)))
     }
 
     /// Execute a query with error handling
-    pub async fn execute(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<u64> {
+    pub async fn execute(
+        &self,
+        sql: &str,
+        params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+    ) -> Result<u64> {
         let client = self.get_client().await?;
-        client.execute(sql, params).await
+        client
+            .execute(sql, params)
+            .await
             .map_err(|e| AgentError::Database(format!("Query execution error: {}", e)))
     }
 
     /// Execute a query and get rows
-    pub async fn query(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<Vec<tokio_postgres::Row>> {
+    pub async fn query(
+        &self,
+        sql: &str,
+        params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+    ) -> Result<Vec<tokio_postgres::Row>> {
         let client = self.get_client().await?;
-        client.query(sql, params).await
+        client
+            .query(sql, params)
+            .await
             .map_err(|e| AgentError::Database(format!("Query error: {}", e)))
     }
 
     /// Query for a single row
-    pub async fn query_one(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<tokio_postgres::Row> {
+    pub async fn query_one(
+        &self,
+        sql: &str,
+        params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+    ) -> Result<tokio_postgres::Row> {
         let client = self.get_client().await?;
-        client.query_one(sql, params).await
+        client
+            .query_one(sql, params)
+            .await
             .map_err(|e| AgentError::Database(format!("Query one error: {}", e)))
     }
 
     /// Query for an optional row
-    pub async fn query_opt(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<Option<tokio_postgres::Row>> {
+    pub async fn query_opt(
+        &self,
+        sql: &str,
+        params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+    ) -> Result<Option<tokio_postgres::Row>> {
         let client = self.get_client().await?;
-        client.query_opt(sql, params).await
+        client
+            .query_opt(sql, params)
+            .await
             .map_err(|e| AgentError::Database(format!("Query opt error: {}", e)))
     }
 
     /// Begin a transaction
     pub async fn with_transaction<F, R>(&self, f: F) -> Result<R>
     where
-        F: for<'a> FnOnce(&'a mut deadpool_postgres::Transaction<'_>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R>> + Send + 'a>>,
+        F: for<'a> FnOnce(
+            &'a mut deadpool_postgres::Transaction<'_>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<R>> + Send + 'a>,
+        >,
         R: Send + 'static,
     {
         let mut client = self.get_client().await?;
-        let mut tx = client.transaction().await
-                                         .map_err(|e| AgentError::Database(format!("Failed to begin transaction: {}", e)))?;
+        let mut tx = client
+            .transaction()
+            .await
+            .map_err(|e| AgentError::Database(format!("Failed to begin transaction: {}", e)))?;
 
         // Execute the function with the transaction
         let result = f(&mut tx).await?;
 
         // Commit the transaction
-        tx.commit().await
-                   .map_err(|e| AgentError::Database(format!("Failed to commit transaction: {}", e)))?;
+        tx.commit()
+            .await
+            .map_err(|e| AgentError::Database(format!("Failed to commit transaction: {}", e)))?;
 
         Ok(result)
     }
@@ -141,13 +177,11 @@ impl PostgresProvider {
 impl HealthCheck for PostgresProvider {
     async fn check_health(&self) -> Result<bool> {
         match self.get_client().await {
-            Ok(client) => {
-                match client.execute("SELECT 1", &[]).await {
-                    Ok(_) => Ok(true),
-                    Err(e) => {
-                        warn!("Database health check failed: {}", e);
-                        Ok(false)
-                    }
+            Ok(client) => match client.execute("SELECT 1", &[]).await {
+                Ok(_) => Ok(true),
+                Err(e) => {
+                    warn!("Database health check failed: {}", e);
+                    Ok(false)
                 }
             },
             Err(e) => {

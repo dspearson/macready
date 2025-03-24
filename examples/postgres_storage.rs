@@ -42,19 +42,22 @@ async fn main() -> Result<()> {
         Ok(storage) => {
             println!("Connected to PostgreSQL");
             storage
-        },
+        }
         Err(e) => {
             eprintln!("Failed to connect to PostgreSQL: {}", e);
             println!("This example requires a running PostgreSQL server.");
             println!("You can start one with Docker:");
-            println!("  docker run --name postgres -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres");
+            println!(
+                "  docker run --name postgres -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres"
+            );
             return Err(e);
         }
     };
 
     // Create a table for metrics if it doesn't exist
-    storage.execute_sql(
-        "CREATE TABLE IF NOT EXISTS disk_metrics (
+    storage
+        .execute_sql(
+            "CREATE TABLE IF NOT EXISTS disk_metrics (
             id SERIAL PRIMARY KEY,
             disk_name TEXT NOT NULL,
             used_bytes BIGINT NOT NULL,
@@ -62,8 +65,9 @@ async fn main() -> Result<()> {
             timestamp TIMESTAMPTZ NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )",
-        &[],
-    ).await?;
+            &[],
+        )
+        .await?;
 
     // Create some sample metrics
     println!("Creating sample metrics...");
@@ -88,50 +92,62 @@ async fn main() -> Result<()> {
     println!("Storing metrics...");
 
     for metric in &metrics {
-        storage.store(metric.clone(), |client, metric| async move {
-            let stmt = "INSERT INTO disk_metrics (disk_name, used_bytes, total_bytes, timestamp)
+        storage
+            .store(metric.clone(), |client, metric| async move {
+                let stmt =
+                    "INSERT INTO disk_metrics (disk_name, used_bytes, total_bytes, timestamp)
                         VALUES ($1, $2, $3, $4) RETURNING id";
 
-            let row = client.query_one(
-                stmt,
-                &[
-                    &metric.disk_name as &(dyn ToSql + Sync),
-                    &metric.used_bytes as &(dyn ToSql + Sync),
-                    &metric.total_bytes as &(dyn ToSql + Sync),
-                    &metric.timestamp as &(dyn ToSql + Sync),
-                ],
-            ).await.map_err(|e| AgentError::Database(e.to_string()))?;
+                let row = client
+                    .query_one(
+                        stmt,
+                        &[
+                            &metric.disk_name as &(dyn ToSql + Sync),
+                            &metric.used_bytes as &(dyn ToSql + Sync),
+                            &metric.total_bytes as &(dyn ToSql + Sync),
+                            &metric.timestamp as &(dyn ToSql + Sync),
+                        ],
+                    )
+                    .await
+                    .map_err(|e| AgentError::Database(e.to_string()))?;
 
-            let id: i32 = row.get(0);
-            Ok(id)
-        }).await?;
+                let id: i32 = row.get(0);
+                Ok(id)
+            })
+            .await?;
     }
 
     // Now retrieve the metrics
     println!("Retrieving metrics...");
 
-    let retrieved_metrics = storage.retrieve("root", |client, disk_name| async move {
-        let stmt = "SELECT disk_name, used_bytes, total_bytes, timestamp
+    let retrieved_metrics = storage
+        .retrieve("root", |client, disk_name| async move {
+            let stmt = "SELECT disk_name, used_bytes, total_bytes, timestamp
                    FROM disk_metrics WHERE disk_name = $1";
 
-        let rows = client.query(
-            stmt,
-            &[&disk_name as &(dyn ToSql + Sync)],
-        ).await.map_err(|e| AgentError::Database(e.to_string()))?;
+            let rows = client
+                .query(stmt, &[&disk_name as &(dyn ToSql + Sync)])
+                .await
+                .map_err(|e| AgentError::Database(e.to_string()))?;
 
-        let metrics = rows.iter().map(|row| {
-            DiskMetric {
-                disk_name: row.get(0),
-                used_bytes: row.get(1),
-                total_bytes: row.get(2),
-                timestamp: row.get(3),
-            }
-        }).collect::<Vec<_>>();
+            let metrics = rows
+                .iter()
+                .map(|row| DiskMetric {
+                    disk_name: row.get(0),
+                    used_bytes: row.get(1),
+                    total_bytes: row.get(2),
+                    timestamp: row.get(3),
+                })
+                .collect::<Vec<_>>();
 
-        Ok(metrics)
-    }).await?;
+            Ok(metrics)
+        })
+        .await?;
 
-    println!("Retrieved {} metrics for root disk", retrieved_metrics.len());
+    println!(
+        "Retrieved {} metrics for root disk",
+        retrieved_metrics.len()
+    );
 
     // Show the metrics
     for metric in retrieved_metrics {

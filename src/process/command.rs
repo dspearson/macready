@@ -1,17 +1,16 @@
 use std::collections::HashMap;
-use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command as StdCommand, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::{debug, error, trace, warn};
+use log::{debug, error, info, trace, warn};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command as TokioCommand};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-use crate::error::{Result, AgentError};
+use crate::error::{AgentError, Result};
 use crate::process::{ProcessConfig, ProcessError, ProcessResult, ProcessSource};
 
 /// Command wrapper for process execution
@@ -136,7 +135,6 @@ impl Command {
         Ok(ProcessHandle {
             child,
             program: self.program.clone(),
-            args: self.args.clone(),
             capture_stdout: self.capture_stdout,
             capture_stderr: self.capture_stderr,
         })
@@ -257,9 +255,6 @@ pub struct ProcessHandle {
     /// Program name
     program: String,
 
-    /// Arguments
-    args: Vec<String>,
-
     /// Whether stdout is captured
     capture_stdout: bool,
 
@@ -274,7 +269,10 @@ impl ProcessHandle {
     }
 
     /// Wait for the process to exit with a timeout
-    pub async fn wait_with_timeout(&mut self, timeout_duration: Duration) -> ProcessResult<std::process::ExitStatus> {
+    pub async fn wait_with_timeout(
+        &mut self,
+        timeout_duration: Duration,
+    ) -> ProcessResult<std::process::ExitStatus> {
         match timeout(timeout_duration, self.child.wait()).await {
             Ok(Ok(status)) => Ok(status),
             Ok(Err(e)) => Err(ProcessError::SpawnError(e)),
@@ -288,16 +286,22 @@ impl ProcessHandle {
             return Err(ProcessError::Other("Stdout not captured".to_string()));
         }
 
-        let stdout = self.child.stdout.take().ok_or_else(|| {
-            ProcessError::Other("Failed to get stdout handle".to_string())
-        })?;
+        let stdout = self
+            .child
+            .stdout
+            .take()
+            .ok_or_else(|| ProcessError::Other("Failed to get stdout handle".to_string()))?;
 
         let mut reader = BufReader::new(stdout).lines();
-        while let Some(line) = reader.next_line().await.map_err(|e| ProcessError::ReadError(e))? {
+        while let Some(line) = reader
+            .next_line()
+            .await
+            .map_err(|e| ProcessError::ReadError(e))?
+        {
             trace!("[{}] stdout: {}", self.program, line);
-            tx.send(line).await.map_err(|e| {
-                ProcessError::ChannelError(e.to_string())
-            })?;
+            tx.send(line)
+                .await
+                .map_err(|e| ProcessError::ChannelError(e.to_string()))?;
         }
 
         Ok(())
@@ -309,12 +313,18 @@ impl ProcessHandle {
             return Err(ProcessError::Other("Stderr not captured".to_string()));
         }
 
-        let stderr = self.child.stderr.take().ok_or_else(|| {
-            ProcessError::Other("Failed to get stderr handle".to_string())
-        })?;
+        let stderr = self
+            .child
+            .stderr
+            .take()
+            .ok_or_else(|| ProcessError::Other("Failed to get stderr handle".to_string()))?;
 
         let mut reader = BufReader::new(stderr).lines();
-        while let Some(line) = reader.next_line().await.map_err(|e| ProcessError::ReadError(e))? {
+        while let Some(line) = reader
+            .next_line()
+            .await
+            .map_err(|e| ProcessError::ReadError(e))?
+        {
             debug!("[{}] stderr: {}", self.program, line);
         }
 
@@ -323,9 +333,10 @@ impl ProcessHandle {
 
     /// Kill the process
     pub async fn kill(&mut self) -> ProcessResult<()> {
-        self.child.kill().await.map_err(|e| {
-            ProcessError::ProcessKilled(format!("Failed to kill process: {}", e))
-        })
+        self.child
+            .kill()
+            .await
+            .map_err(|e| ProcessError::ProcessKilled(format!("Failed to kill process: {}", e)))
     }
 }
 
@@ -334,31 +345,52 @@ pub async fn spawn_and_process<S: ProcessSource>(
     source: S,
     config: ProcessConfig,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
-    let command = source.command();
-
-    // Create a channel for stdout lines
-    let (tx, mut rx) = mpsc::channel::<String>(100);
-
-    // Spawn the process
-    debug!("Spawning process: {:?}", command);
-
-    // First spawn the command
-    let mut process_handle = match command.spawn().await {
-        Ok(handle) => handle,
-        Err(e) => return Err(e.into()),
-    };
-
-    // Clone the source for the tokio task
     let source = Arc::new(source);
+    let config_clone = config.clone();
 
-    // Spawn the main processing task
-    let task = tokio::spawn(async move {
+    // Spawn the initial process handler task
+    let task = tokio::spawn(process_task(Arc::clone(&source), config_clone));
+
+    Ok(task)
+}
+
+async fn process_task<S: ProcessSource>(source: Arc<S>, config: ProcessConfig) -> Result<()> {
+    let mut restart_attempts = 0;
+
+    loop {
+        // Get the command configuration from the source
+        let command = source.command();
+        debug!("Spawning process: {:?} {:?}", command.program, command.args);
+
+        // Create a channel for stdout lines
+        let (tx, mut rx) = mpsc::channel::<String>(100);
+
+        // Spawn the process
+        let mut process_handle = match command.spawn().await {
+            Ok(handle) => handle,
+            Err(e) => {
+                error!("Failed to spawn process: {}", e);
+
+                // Check if we should retry
+                if restart_attempts < config.max_restart_attempts && config.restart_on_exit {
+                    restart_attempts += 1;
+                    warn!(
+                        "Failed to spawn process, retrying (attempt {}/{})",
+                        restart_attempts, config.max_restart_attempts
+                    );
+
+                    // Wait before retrying
+                    tokio::time::sleep(config.restart_delay).await;
+                    continue;
+                }
+
+                return Err(e.into());
+            }
+        };
+
         // Take stdout and stderr from the process handle
         let stdout = process_handle.child.stdout.take();
         let stderr = process_handle.child.stderr.take();
-
-        // Clone program name before it's moved
-        let program_name = process_handle.program.clone();
 
         // Set up channels for signaling when stdout/stderr processing is done
         let (stdout_done_tx, stdout_done_rx) = tokio::sync::oneshot::channel();
@@ -367,11 +399,11 @@ pub async fn spawn_and_process<S: ProcessSource>(
         // Process stdout if captured
         if let Some(stdout) = stdout {
             let tx_clone = tx.clone();
-            let program_clone = program_name.clone(); // Clone for the stdout task
+            let program_name = process_handle.program.clone();
             tokio::spawn(async move {
                 let mut reader = tokio::io::BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = reader.next_line().await {
-                    trace!("[{}] stdout: {}", program_clone, line);
+                    trace!("[{}] stdout: {}", program_name, line);
                     if tx_clone.send(line).await.is_err() {
                         break;
                     }
@@ -385,11 +417,11 @@ pub async fn spawn_and_process<S: ProcessSource>(
 
         // Process stderr if captured
         if let Some(stderr) = stderr {
-            let program_clone = program_name.clone(); // Clone for the stderr task
+            let program_name = process_handle.program.clone();
             tokio::spawn(async move {
                 let mut reader = tokio::io::BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = reader.next_line().await {
-                    debug!("[{}] stderr: {}", program_clone, line);
+                    debug!("[{}] stderr: {}", program_name, line);
                 }
                 let _ = stderr_done_tx.send(());
             });
@@ -398,76 +430,138 @@ pub async fn spawn_and_process<S: ProcessSource>(
             let _ = stderr_done_tx.send(());
         }
 
-        let mut restart_attempts = 0;
-
-        // Process messages from stdout in a loop until there are no more
-        while let Some(line) = rx.recv().await {
-            if let Err(e) = source.process_line(line).await {
-                error!("Error processing line: {}", e);
+        // Spawn a task to process messages from stdout
+        let source_clone = Arc::clone(&source);
+        let rx_handler = tokio::spawn(async move {
+            while let Some(line) = rx.recv().await {
+                if let Err(e) = source_clone.process_line(line).await {
+                    error!("Error processing line: {}", e);
+                }
             }
-        }
+        });
 
-        // Get process exit status
-        let exit_status = match tokio::time::timeout(
-            config.exit_timeout,
-            process_handle.child.wait(),
-        ).await {
-            Ok(Ok(status)) => {
-                // Wait for stdout and stderr processing to complete
-                let _ = stdout_done_rx.await;
-                let _ = stderr_done_rx.await;
+        // Wait for the process to exit
+        let exit_status =
+            match tokio::time::timeout(config.exit_timeout, process_handle.child.wait()).await {
+                Ok(Ok(status)) => {
+                    // Wait for stdout and stderr processing to complete
+                    let _ = stdout_done_rx.await;
+                    let _ = stderr_done_rx.await;
 
-                debug!("Process exited with status: {}", status);
+                    // Cancel the rx handler task
+                    rx_handler.abort();
 
-                if !status.success() && config.restart_on_exit && restart_attempts < config.max_restart_attempts {
-                    restart_attempts += 1;
-                    debug!("Process exited with non-zero status, restarting (attempt {}/{})",
-                          restart_attempts, config.max_restart_attempts);
+                    debug!("Process exited with status: {}", status);
+                    status
+                }
+                Ok(Err(e)) => {
+                    error!("Error waiting for process: {}", e);
+                    rx_handler.abort();
 
-                    // Report exit to the source
-                    if let Err(e) = source.handle_error(ProcessError::NonZeroExit(status)).await {
-                        error!("Error handling process exit: {}", e);
+                    // If the error is recoverable, try to restart
+                    if config.restart_on_exit && restart_attempts < config.max_restart_attempts {
+                        restart_attempts += 1;
+                        warn!(
+                            "Error waiting for process, restarting (attempt {}/{})",
+                            restart_attempts, config.max_restart_attempts
+                        );
+
+                        // Report error to the source
+                        if let Err(e) = source
+                            .handle_error(ProcessError::Other(format!("Error waiting: {}", e)))
+                            .await
+                        {
+                            error!("Error handling process error: {}", e);
+                        }
+
+                        // Wait before restarting
+                        tokio::time::sleep(config.restart_delay).await;
+                        continue;
                     }
 
-                    // Wait before restarting
-                    tokio::time::sleep(config.restart_delay).await;
-
-                    // Would need to restart the process here - but we need to refactor this function
-                    // to support actual restarts
-                    return Err(AgentError::Process("Process restart not implemented".to_string()));
+                    return Err(AgentError::Process(format!(
+                        "Error waiting for process: {}",
+                        e
+                    )));
                 }
+                Err(_) => {
+                    error!(
+                        "Timed out waiting for process to exit after {:?}",
+                        config.exit_timeout
+                    );
+                    rx_handler.abort();
 
-                // Report normal exit to the source
-                if let Err(e) = source.on_exit(status).await {
-                    error!("Error handling process exit: {}", e);
+                    // Try to kill the process
+                    if let Err(e) = process_handle.child.kill().await {
+                        warn!("Failed to kill process: {}", e);
+                    }
+
+                    // If timeout is recoverable, try to restart
+                    if config.restart_on_exit && restart_attempts < config.max_restart_attempts {
+                        restart_attempts += 1;
+                        warn!(
+                            "Process timed out, restarting (attempt {}/{})",
+                            restart_attempts, config.max_restart_attempts
+                        );
+
+                        // Report error to the source
+                        if let Err(e) = source
+                            .handle_error(ProcessError::Timeout(config.exit_timeout))
+                            .await
+                        {
+                            error!("Error handling process timeout: {}", e);
+                        }
+
+                        // Wait before restarting
+                        tokio::time::sleep(config.restart_delay).await;
+                        continue;
+                    }
+
+                    return Err(AgentError::Timeout(format!(
+                        "Process timed out after {:?}",
+                        config.exit_timeout
+                    )));
                 }
+            };
 
-                if status.success() {
-                    Ok(())
-                } else {
-                    Err(AgentError::Process(format!("Process exited with status: {}", status)))
-                }
-            },
-            Ok(Err(e)) => {
-                error!("Error waiting for process: {}", e);
-                Err(AgentError::Process(format!("Error waiting for process: {}", e)))
-            },
-            Err(_) => {
-                error!("Timed out waiting for process to exit after {:?}", config.exit_timeout);
+        // Notify the source about process exit
+        if let Err(e) = source.on_exit(exit_status).await {
+            error!("Error handling process exit: {}", e);
+        }
 
-                // Try to kill the process
-                if let Err(e) = process_handle.child.kill().await {
-                    warn!("Failed to kill process: {}", e);
-                }
+        // Check if we need to restart the process
+        if !exit_status.success()
+            && config.restart_on_exit
+            && restart_attempts < config.max_restart_attempts
+        {
+            restart_attempts += 1;
+            info!(
+                "Process exited with non-zero status {}, restarting (attempt {}/{})",
+                exit_status, restart_attempts, config.max_restart_attempts
+            );
 
-                Err(AgentError::Timeout(format!(
-                    "Process timed out after {:?}", config.exit_timeout
-                )))
+            // Report exit to the source
+            if let Err(e) = source
+                .handle_error(ProcessError::NonZeroExit(exit_status))
+                .await
+            {
+                error!("Error handling process exit: {}", e);
             }
-        };
 
-        exit_status
-    });
+            // Wait before restarting
+            tokio::time::sleep(config.restart_delay).await;
+            continue;
+        } else if !exit_status.success() {
+            // Process exited with non-zero status and no restart
+            return Err(AgentError::Process(format!(
+                "Process exited with status: {}",
+                exit_status
+            )));
+        }
 
-    Ok(task)
+        // Process exited successfully, no need to restart
+        break;
+    }
+
+    Ok(())
 }

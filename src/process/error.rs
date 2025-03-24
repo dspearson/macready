@@ -22,7 +22,7 @@ pub enum ProcessError {
     Timeout(Duration),
 
     #[error("Failed to read from process: {0}")]
-    ReadError(io::Error),  // Removed the #[from] attribute here
+    ReadError(io::Error), // Removed the #[from] attribute here
 
     #[error("Process output parse error: {0}")]
     ParseError(String),
@@ -31,10 +31,7 @@ pub enum ProcessError {
     UnexpectedTermination,
 
     #[error("Failed to restart process after {attempts} attempts: {reason}")]
-    RestartFailed {
-        attempts: usize,
-        reason: String,
-    },
+    RestartFailed { attempts: usize, reason: String },
 
     #[error("Process channel error: {0}")]
     ChannelError(String),

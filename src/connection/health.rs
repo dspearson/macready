@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use log::{debug, error, info, trace, warn};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::interval;
@@ -114,7 +117,10 @@ async fn run_health_checks<H: HealthCheck>(
     let mut consecutive_successes = 0;
     let mut current_healthy = status.is_healthy();
 
-    info!("Starting health checks for {} (interval: {}s)", name, config.interval);
+    info!(
+        "Starting health checks for {} (interval: {}s)",
+        name, config.interval
+    );
 
     loop {
         check_interval.tick().await;
@@ -134,7 +140,7 @@ async fn run_health_checks<H: HealthCheck>(
                     // Send recovery event
                     let _ = tx.send(HealthEvent::Healthy { name: name.clone() }).await;
                 }
-            },
+            }
             Ok(false) => {
                 handle_failed_check(
                     &name,
@@ -145,8 +151,9 @@ async fn run_health_checks<H: HealthCheck>(
                     &mut consecutive_successes,
                     &config,
                     &tx,
-                ).await;
-            },
+                )
+                .await;
+            }
             Err(e) => {
                 let reason = format!("Health check error: {}", e);
                 handle_failed_check(
@@ -158,7 +165,8 @@ async fn run_health_checks<H: HealthCheck>(
                     &mut consecutive_successes,
                     &config,
                     &tx,
-                ).await;
+                )
+                .await;
             }
         }
     }
@@ -184,22 +192,28 @@ async fn handle_failed_check(
         // First failure
         debug!("Health check failed for {}: {}", name, reason);
     } else {
-        warn!("Health check failed for {} ({} consecutive failures): {}",
-              name, failure_count, reason);
+        warn!(
+            "Health check failed for {} ({} consecutive failures): {}",
+            name, failure_count, reason
+        );
     }
 
     // Check if we need to mark as unhealthy
     if *current_healthy && failure_count >= config.failure_threshold {
-        error!("Connection {} is now marked as unhealthy after {} consecutive failures",
-               name, failure_count);
+        error!(
+            "Connection {} is now marked as unhealthy after {} consecutive failures",
+            name, failure_count
+        );
         status.set_healthy(false);
         *current_healthy = false;
 
         // Send unhealthy event
-        let _ = tx.send(HealthEvent::Unhealthy {
-            name: name.to_string(),
-            reason: reason.to_string(),
-        }).await;
+        let _ = tx
+            .send(HealthEvent::Unhealthy {
+                name: name.to_string(),
+                reason: reason.to_string(),
+            })
+            .await;
     }
 }
 

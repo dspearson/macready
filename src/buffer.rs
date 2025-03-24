@@ -1,10 +1,9 @@
-use chrono::{DateTime, Duration, Utc};
-use log::{debug, info, trace, warn};
+use chrono::{Duration, Utc};
+use log::{debug, info, trace};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 
 use crate::collector::MetricPoint;
-use crate::entity::Entity;
 use crate::error::{AgentError, Result};
 
 /// Configuration for metrics buffer
@@ -63,13 +62,20 @@ impl<M: MetricPoint> MetricsBuffer<M> {
     pub fn add(&self, metric: M) -> Result<()> {
         let entity_name = metric.entity_name().to_string();
 
-        let mut buffer = self.buffer.write().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let mut buffer = self
+            .buffer
+            .write()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
 
-        buffer.entry(entity_name.clone())
-              .or_insert_with(Vec::new)
-              .push(metric);
+        buffer
+            .entry(entity_name.clone())
+            .or_insert_with(Vec::new)
+            .push(metric);
 
-        trace!("Added metric for unknown entity '{}' to buffer", entity_name);
+        trace!(
+            "Added metric for unknown entity '{}' to buffer",
+            entity_name
+        );
 
         Ok(())
     }
@@ -89,31 +95,45 @@ impl<M: MetricPoint> MetricsBuffer<M> {
 
     /// Get all entity names in the buffer
     pub fn get_entity_names(&self) -> Result<Vec<String>> {
-        let buffer = self.buffer.read().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let buffer = self
+            .buffer
+            .read()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
         Ok(buffer.keys().cloned().collect())
     }
 
     /// Get and remove metrics for a specific entity
     pub fn take_for_entity(&self, entity_name: &str) -> Result<Vec<M>> {
-        let mut buffer = self.buffer.write().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let mut buffer = self
+            .buffer
+            .write()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
 
         match buffer.remove(entity_name) {
             Some(metrics) => {
-                debug!("Removed {} buffered metrics for entity '{}'", metrics.len(), entity_name);
+                debug!(
+                    "Removed {} buffered metrics for entity '{}'",
+                    metrics.len(),
+                    entity_name
+                );
                 Ok(metrics)
-            },
+            }
             None => Ok(Vec::new()),
         }
     }
 
     /// Get entity names that have enough metrics to warrant auto-detection
     pub fn get_autodetect_candidates(&self) -> Result<Vec<String>> {
-        let buffer = self.buffer.read().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let buffer = self
+            .buffer
+            .read()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
 
-        Ok(buffer.iter()
-               .filter(|(_, metrics)| metrics.len() >= self.config.detection_threshold)
-               .map(|(name, _)| name.clone())
-               .collect())
+        Ok(buffer
+            .iter()
+            .filter(|(_, metrics)| metrics.len() >= self.config.detection_threshold)
+            .map(|(name, _)| name.clone())
+            .collect())
     }
 
     /// Clean up the buffer based on age and size limits
@@ -123,7 +143,10 @@ impl<M: MetricPoint> MetricsBuffer<M> {
         // Age-based cleanup
         let cutoff_time = Utc::now() - Duration::minutes(self.config.max_age_minutes);
 
-        let mut buffer = self.buffer.write().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let mut buffer = self
+            .buffer
+            .write()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
 
         // First pass: age-based cleanup and per-entity size limits
         for (entity_name, metrics) in buffer.iter_mut() {
@@ -141,15 +164,19 @@ impl<M: MetricPoint> MetricsBuffer<M> {
                 metrics.truncate(self.config.max_per_entity);
 
                 if size_removed > 0 {
-                    debug!("Truncated {} excess buffered metrics for entity '{}'",
-                           size_removed, entity_name);
+                    debug!(
+                        "Truncated {} excess buffered metrics for entity '{}'",
+                        size_removed, entity_name
+                    );
                     total_removed += size_removed;
                 }
             }
 
             if age_removed > 0 {
-                debug!("Removed {} old buffered metrics for entity '{}'",
-                       age_removed, entity_name);
+                debug!(
+                    "Removed {} old buffered metrics for entity '{}'",
+                    age_removed, entity_name
+                );
                 total_removed += age_removed;
             }
         }
@@ -163,8 +190,10 @@ impl<M: MetricPoint> MetricsBuffer<M> {
         if total_buffered > self.config.max_total {
             // We need to remove oldest metrics across all entities
             let to_remove = total_buffered - self.config.max_total;
-            info!("Total buffer size ({}) exceeds maximum ({}), removing {} oldest metrics",
-                  total_buffered, self.config.max_total, to_remove);
+            info!(
+                "Total buffer size ({}) exceeds maximum ({}), removing {} oldest metrics",
+                total_buffered, self.config.max_total, to_remove
+            );
 
             // Flatten all metrics into one vector with entity name
             let mut all_metrics = Vec::new();
@@ -185,8 +214,10 @@ impl<M: MetricPoint> MetricsBuffer<M> {
                     metrics.retain(|m| m.timestamp() > *cutoff_ts);
                     let removed = original_len - metrics.len();
                     if removed > 0 {
-                        debug!("Removed {} oldest metrics from buffer for entity '{}'",
-                               removed, entity_name);
+                        debug!(
+                            "Removed {} oldest metrics from buffer for entity '{}'",
+                            removed, entity_name
+                        );
                     }
                 }
             }
@@ -202,19 +233,28 @@ impl<M: MetricPoint> MetricsBuffer<M> {
 
     /// Get the total number of buffered metrics
     pub fn total_count(&self) -> Result<usize> {
-        let buffer = self.buffer.read().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let buffer = self
+            .buffer
+            .read()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
         Ok(buffer.values().map(|v| v.len()).sum())
     }
 
     /// Get the number of unique entities in the buffer
     pub fn entity_count(&self) -> Result<usize> {
-        let buffer = self.buffer.read().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let buffer = self
+            .buffer
+            .read()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
         Ok(buffer.len())
     }
 
     /// Get count of metrics for a specific entity
     pub fn count_for_entity(&self, entity_name: &str) -> Result<usize> {
-        let buffer = self.buffer.read().map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
+        let buffer = self
+            .buffer
+            .read()
+            .map_err(|_| AgentError::Other("Lock poisoned".to_string()))?;
         Ok(buffer.get(entity_name).map_or(0, |v| v.len()))
     }
 }

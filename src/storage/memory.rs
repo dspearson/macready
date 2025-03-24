@@ -20,7 +20,10 @@ impl<T> MemoryStorage<T> {
 
     /// Store data with a key
     pub fn store(&self, key: impl Into<String>, value: T) -> Result<()> {
-        let mut data = self.data.write().map_err(|_| AgentError::Storage("Lock poisoned".to_string()))?;
+        let mut data = self
+            .data
+            .write()
+            .map_err(|_| AgentError::Storage("Lock poisoned".to_string()))?;
         data.insert(key.into(), value);
         Ok(())
     }
@@ -28,28 +31,40 @@ impl<T> MemoryStorage<T> {
     /// Retrieve data by key
     pub fn get(&self, key: &str) -> Result<Option<T>>
     where
-        T: Clone
+        T: Clone,
     {
-        let data = self.data.read().map_err(|_| AgentError::Storage("Lock poisoned".to_string()))?;
+        let data = self
+            .data
+            .read()
+            .map_err(|_| AgentError::Storage("Lock poisoned".to_string()))?;
         Ok(data.get(key).cloned())
     }
 
     /// Remove data by key
     pub fn remove(&self, key: &str) -> Result<Option<T>> {
-        let mut data = self.data.write().map_err(|_| AgentError::Storage("Lock poisoned".to_string()))?;
+        let mut data = self
+            .data
+            .write()
+            .map_err(|_| AgentError::Storage("Lock poisoned".to_string()))?;
         Ok(data.remove(key))
     }
 
     /// Clear all data
     pub fn clear(&self) -> Result<()> {
-        let mut data = self.data.write().map_err(|_| AgentError::Storage("Lock poisoned".to_string()))?;
+        let mut data = self
+            .data
+            .write()
+            .map_err(|_| AgentError::Storage("Lock poisoned".to_string()))?;
         data.clear();
         Ok(())
     }
 
     /// Get all keys
     pub fn keys(&self) -> Result<Vec<String>> {
-        let data = self.data.read().map_err(|_| AgentError::Storage("Lock poisoned".to_string()))?;
+        let data = self
+            .data
+            .read()
+            .map_err(|_| AgentError::Storage("Lock poisoned".to_string()))?;
         Ok(data.keys().cloned().collect())
     }
 

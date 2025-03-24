@@ -43,8 +43,9 @@ async fn main() -> Result<()> {
         .expect("Failed to connect to PostgreSQL");
 
     // Create table if not exists
-    storage.execute_sql(
-        "CREATE TABLE IF NOT EXISTS cpu_metrics (
+    storage
+        .execute_sql(
+            "CREATE TABLE IF NOT EXISTS cpu_metrics (
             id SERIAL PRIMARY KEY,
             cpu TEXT NOT NULL,
             user_pct FLOAT NOT NULL,
@@ -53,8 +54,10 @@ async fn main() -> Result<()> {
             timestamp TIMESTAMPTZ NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )",
-        &[],
-    ).await.expect("Failed to create table");
+            &[],
+        )
+        .await
+        .expect("Failed to create table");
 
     // Create a metrics collector
     let metrics = Arc::new(Mutex::new(Vec::<CpuMetric>::new()));
@@ -83,8 +86,10 @@ async fn main() -> Result<()> {
     // Store the metrics using our custom closure
     let metrics_vec = metrics.lock().unwrap().clone();
     for metric in &metrics_vec {
-        let id = storage.store(metric.clone(), |client, metric| async move {
-            client.query_one(
+        let id =
+            storage
+                .store(metric.clone(), |client, metric| async move {
+                    client.query_one(
                 "INSERT INTO cpu_metrics (cpu, user_pct, system_pct, idle_pct, timestamp)
                  VALUES ($1, $2, $3, $4, $5) RETURNING id",
                 &[
@@ -98,32 +103,38 @@ async fn main() -> Result<()> {
             .await
             .map(|row| row.get::<_, i32>(0))
             .map_err(|e| AgentError::Database(format!("Failed to insert CPU metric: {}", e)))
-        }).await.expect("Failed to store metric");
+                })
+                .await
+                .expect("Failed to store metric");
 
         println!("Stored CPU metric with ID: {}", id);
     }
 
     // Retrieve metrics
-    let retrieved = storage.retrieve("cpu0", |client, cpu| async move {
-        client.query(
-            "SELECT cpu, user_pct, system_pct, idle_pct, timestamp FROM cpu_metrics
+    let retrieved = storage
+        .retrieve("cpu0", |client, cpu| async move {
+            client
+                .query(
+                    "SELECT cpu, user_pct, system_pct, idle_pct, timestamp FROM cpu_metrics
              WHERE cpu = $1 ORDER BY timestamp DESC",
-            &[&cpu as &(dyn ToSql + Sync)],
-        )
-        .await
-        .map(|rows| {
-            rows.iter().map(|row| {
-                CpuMetric {
-                    cpu: row.get(0),
-                    user: row.get(1),
-                    system: row.get(2),
-                    idle: row.get(3),
-                    timestamp: row.get(4),
-                }
-            }).collect::<Vec<_>>()
+                    &[&cpu as &(dyn ToSql + Sync)],
+                )
+                .await
+                .map(|rows| {
+                    rows.iter()
+                        .map(|row| CpuMetric {
+                            cpu: row.get(0),
+                            user: row.get(1),
+                            system: row.get(2),
+                            idle: row.get(3),
+                            timestamp: row.get(4),
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .map_err(|e| AgentError::Database(format!("Failed to query CPU metrics: {}", e)))
         })
-        .map_err(|e| AgentError::Database(format!("Failed to query CPU metrics: {}", e)))
-    }).await.expect("Failed to retrieve metrics");
+        .await
+        .expect("Failed to retrieve metrics");
 
     println!("Retrieved {} metrics for cpu0", retrieved.len());
 
