@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::pin::Pin;
 use tokio::sync::RwLock;
 use super::core::{Collector, MetricBatch, MetricType};
@@ -16,6 +17,7 @@ pub trait StreamingCollector: Collector {
 }
 
 /// A base implementation of a streaming collector
+#[allow(dead_code)]
 pub struct BaseStreamingCollector<T: MetricType> {
     /// The collector configuration
     config: CollectorConfig,
@@ -24,9 +26,10 @@ pub struct BaseStreamingCollector<T: MetricType> {
     /// The cleanup function
     cleanup_fn: Box<dyn Fn() ->Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> + Send + Sync>,
     /// Whether the collector is running
-    running: RwLock<bool>,
+    running: Arc<RwLock<bool>>,
 }
 
+#[allow(dead_code)]
 impl<T: MetricType> BaseStreamingCollector<T> {
     /// Create a new base streaming collector
     pub fn new<I, C>(
@@ -42,7 +45,7 @@ impl<T: MetricType> BaseStreamingCollector<T> {
             config,
             init_fn: Box::new(init_fn),
             cleanup_fn: Box::new(cleanup_fn),
-            running: RwLock::new(false),
+            running: Arc::new(RwLock::new(false)),
         }
     }
 }
@@ -62,7 +65,7 @@ impl<T: MetricType> Collector for BaseStreamingCollector<T> {
         // Create the output channel
         let (tx, rx) = mpsc::channel(self.config.buffer_size);
         let source = self.config.name.clone();
-        let running = self.running.clone();  // Clone the RwLock directly
+        let running = Arc::clone(&self.running);
 
         tokio::spawn(async move {
             let mut input_rx = input_rx;
