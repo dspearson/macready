@@ -5,7 +5,7 @@ use std::fmt;
 pub type Result<T> = std::result::Result<T, AgentError>;
 
 /// Agent error
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone)]  // Added Clone trait
 pub enum AgentError {
     /// Database error
     Database(String),
