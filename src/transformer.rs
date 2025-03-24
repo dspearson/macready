@@ -2,10 +2,10 @@ use crate::error::Result;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-/// Trait for transforming raw metrics into standardized metrics
+/// Trait for transforming raw metrics into standardised metrics
 #[async_trait::async_trait]
 pub trait MetricTransformer<I, O>: Send + Sync + 'static {
-    /// Transform raw input metrics into standardized output metrics
+    /// Transform raw input metrics into standardised output metrics
     async fn transform(&self, input: I) -> Result<Vec<O>>;
 
     /// Get the name of this transformer
