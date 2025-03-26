@@ -3,9 +3,10 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
-use log::{debug, info};
+use clap::Parser;
+use log::{debug, info, error};
 use macready::collector::{Collector, CollectorConfig, MetricBatch, PeriodicCollector};
-use macready::config::{AgentConfig, DatabaseConfig, SslMode, load_config};
+use macready::config::{AgentConfig, load_config};
 use macready::error::AgentError;
 use macready::error::Result as MacreadyResult;
 use macready::storage::postgres_impl::{PostgresStorage, PostgresStorageExt};
@@ -14,6 +15,19 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
 use tokio_postgres::types::ToSql;
+
+/// Command line arguments for the uptime example
+#[derive(Parser, Debug)]
+#[command(name = "uptime", about = "Macready uptime monitoring example")]
+struct Args {
+    /// Path to the configuration file (required)
+    #[arg(short, long)]
+    config: PathBuf,
+
+    /// Interval between metric collections in seconds
+    #[arg(short, long, default_value = "60")]
+    interval: u64,
+}
 
 // Define an uptime metric
 #[derive(Debug, Clone)]
@@ -120,7 +134,7 @@ impl Collector for UptimeCollector {
                             })
                             .await
                         {
-                            log::error!("Failed to store metric: {}", e);
+                            error!("Failed to store metric: {}", e);
                         }
 
                         // Also send the metric to the channel for anyone listening
@@ -131,7 +145,7 @@ impl Collector for UptimeCollector {
                         }
                     }
                     Err(e) => {
-                        log::error!("Failed to get uptime: {}", e);
+                        error!("Failed to get uptime: {}", e);
                     }
                 }
             }
@@ -164,7 +178,7 @@ impl PeriodicCollector for UptimeCollector {
                 Ok(vec![metric])
             }
             Err(e) => {
-                log::error!("Failed to get uptime: {}", e);
+                error!("Failed to get uptime: {}", e);
                 Ok(vec![])
             }
         }
@@ -207,58 +221,48 @@ fn parse_uptime(line: &str) -> Result<i64, macready::error::AgentError> {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    // Load configuration from config.toml using macready's config loader
-    let config_path = PathBuf::from("config.toml");
-    let config: AgentConfig = match load_config(&config_path) {
+async fn main() -> anyhow::Result<()> {
+    // Parse command line arguments
+    let args = Args::parse();
+
+    // Verify the configuration file exists
+    if !args.config.exists() {
+        // Initialize logger with default level for error reporting
+        macready::init_logging(&macready::config::LogLevel::Error);
+        error!("Configuration file not found: {}", args.config.display());
+        return Err(anyhow::anyhow!("Configuration file not found: {}", args.config.display()));
+    }
+
+    // Load configuration from the specified file
+    let config_path = &args.config;
+    let config: AgentConfig = match load_config(config_path) {
         Ok(config) => {
-            // Initialize logger with config
+            // Initialize logger with config-specified level
             macready::init_logging(&config.log_level);
             info!("Configuration loaded from {}", config_path.display());
             config
         }
         Err(e) => {
-            // Initialize logger with default level before logging error
-            macready::init_logging(&macready::config::LogLevel::Info);
-            log::error!("Failed to load configuration: {}", e);
-            log::info!("Using default configuration");
-
-            // Provide default configuration using AgentConfig
-            AgentConfig {
-                connection: DatabaseConfig {
-                    host: "localhost".to_string(),
-                    port: 5432,
-                    name: "metrics".to_string(),
-                    username: "postgres".to_string(),
-                    password: "postgres".to_string(),
-                    ssl_mode: SslMode::Disable,
-                    ca_cert: None,
-                    client_cert: None,
-                    client_key: None,
-                },
-                collection_interval: 60, // Default interval in seconds
-                storage_type: macready::config::StorageType::Postgres,
-                log_level: macready::config::LogLevel::Info,
-            }
+            // Initialize logger with default level for error reporting
+            macready::init_logging(&macready::config::LogLevel::Error);
+            error!("Failed to load configuration: {}", e);
+            return Err(anyhow::anyhow!("Failed to load configuration: {}", e));
         }
     };
 
     info!("Starting uptime metrics collector...");
 
     // Create storage
-    let storage =
-        match PostgresStorage::<UptimeMetric>::new(config.connection.clone(), "uptime_metrics")
-            .await
-        {
-            Ok(storage) => {
-                info!("Connected to PostgreSQL");
-                storage
-            }
-            Err(e) => {
-                log::error!("Failed to connect to PostgreSQL: {}", e);
-                return Err(e.into());
-            }
-        };
+    let storage = match PostgresStorage::<UptimeMetric>::new(config.connection.clone(), "uptime_metrics").await {
+        Ok(storage) => {
+            info!("Connected to PostgreSQL");
+            storage
+        }
+        Err(e) => {
+            error!("Failed to connect to PostgreSQL: {}", e);
+            return Err(e.into());
+        }
+    };
 
     // Create the uptime metrics table if it doesn't exist
     storage
@@ -279,12 +283,12 @@ async fn main() -> Result<()> {
     let hostname = hostname::get()?.to_string_lossy().into_owned();
 
     // Create the uptime collector
-    let collector = UptimeCollector::new(storage, hostname, config.collection_interval);
+    let collector = UptimeCollector::new(storage, hostname, args.interval);
 
     // Start the collector
     info!(
         "Starting uptime collection every {} seconds",
-        config.collection_interval
+        args.interval
     );
     let mut metrics_rx = collector.start().await?;
 
@@ -304,7 +308,7 @@ async fn main() -> Result<()> {
             Ok::<_, anyhow::Error>(())
         } => {
             if let Err(e) = result {
-                log::error!("Error receiving metrics: {}", e);
+                error!("Error receiving metrics: {}", e);
             }
         }
     }
