@@ -1,0 +1,11 @@
+collection_interval = 5
+storage_type = "postgres"
+log_level = "info"
+
+[connection]
+username = "metrics_user"
+password = "example_password"
+name = "metrics_db"
+host = "db_host"
+port = 26257
+ssl_mode = "require"

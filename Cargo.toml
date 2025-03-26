@@ -43,5 +43,5 @@ transformer = []
 entity = []
 
 [[example]]
-name = "network_metrics"
-path = "examples/network_metrics.rs"
+name = "uptime"
+path = "examples/uptime.rs"
