@@ -7,10 +7,19 @@
 pub mod command;
 pub mod error;
 pub mod stream;
+pub mod parsers;
 
 pub use command::{Command, CommandBuilder, ProcessHandle};
 pub use error::{ProcessError, ProcessResult};
 pub use stream::{LineStream, RecordStream, StreamParser};
+
+pub use parsers::{
+    CustomParser,
+    DelimitedTextParser,
+    FixedWidthParser,
+    JsonLinesParser,
+    KeyValueParser
+};
 
 /// Trait for sources that provide metrics via external processes
 #[async_trait::async_trait]
