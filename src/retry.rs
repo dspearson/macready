@@ -1,10 +1,10 @@
+
+use anyhow::{anyhow, Result};
 use log::{debug, warn};
 use rand::random;
 use std::future::Future;
 use std::time::Duration;
 use tokio::time::sleep;
-
-use crate::error::{AgentError, Result};
 
 /// Configuration for retry behaviour
 #[derive(Debug, Clone)]
@@ -38,15 +38,15 @@ impl Default for RetryConfig {
 }
 
 /// Execute a future with retry logic
-pub async fn execute_with_retry<F, Fut, T, E>(
+pub async fn execute_with_retry<F, Fut, T>(
     operation: F,
     config: RetryConfig,
     context: &str,
 ) -> Result<T>
 where
     F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = std::result::Result<T, E>> + Send,
-    E: std::error::Error + Send + Sync + 'static,
+    Fut: Future<Output = Result<T>> + Send,
+    T: Send + 'static,
 {
     let mut attempts = 0;
     let mut delay = Duration::from_millis(config.initial_delay_ms);
@@ -58,7 +58,10 @@ where
                 attempts += 1;
 
                 if attempts >= config.max_attempts {
-                    return Err(AgentError::retry(context, attempts, err));
+                    return Err(anyhow!(
+                        "{} failed after {} attempts: {}",
+                        context, attempts, err
+                    ));
                 }
 
                 warn!(
@@ -87,11 +90,11 @@ where
 }
 
 /// A simplified version of execute_with_retry that uses default config
-pub async fn retry<F, Fut, T, E>(operation: F, context: &str) -> Result<T>
+pub async fn retry<F, Fut, T>(operation: F, context: &str) -> Result<T>
 where
     F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = std::result::Result<T, E>> + Send,
-    E: std::error::Error + Send + Sync + 'static,
+    Fut: Future<Output = Result<T>> + Send,
+    T: Send + 'static,
 {
     execute_with_retry(operation, RetryConfig::default(), context).await
 }

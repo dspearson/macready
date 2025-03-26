@@ -4,8 +4,8 @@ use std::sync::Arc;
 use crate::config::DatabaseConfig;
 use crate::connection::health::HealthCheck;
 use crate::connection::postgres::PostgresProvider;
-use crate::error::{AgentError, Result};
 use crate::retry::{RetryConfig, execute_with_retry};
+use anyhow::{Context, Result};
 
 /// PostgreSQL storage that allows maximum flexibility by accepting user-defined handlers
 pub struct PostgresStorage<T: Send + Sync + Clone + 'static> {
@@ -71,7 +71,6 @@ impl<T: Send + Sync + Clone + 'static> PostgresStorage<T> {
     }
 
     /// Execute a transaction with retry logic
-    /// Execute a transaction with retry logic
     pub async fn execute_in_transaction<F, Fut, R>(&self, operation: F, context: &str) -> Result<R>
     where
         F: Fn(&mut deadpool_postgres::Transaction<'_>) -> Fut + Send + Sync + Clone + 'static,
@@ -84,15 +83,13 @@ impl<T: Send + Sync + Clone + 'static> PostgresStorage<T> {
                 let operation = operation.clone();
                 Box::pin(async move {
                     let mut client = provider.get_client().await?;
-                    let mut tx = client.transaction().await.map_err(|e| {
-                        AgentError::Database(format!("Failed to begin transaction: {}", e))
-                    })?;
+                    let mut tx = client.transaction().await
+                        .context("Failed to begin transaction")?;
 
                     match operation(&mut tx).await {
                         Ok(result) => {
-                            tx.commit().await.map_err(|e| {
-                                AgentError::Database(format!("Failed to commit transaction: {}", e))
-                            })?;
+                            tx.commit().await
+                                .context("Failed to commit transaction")?;
                             Ok(result)
                         }
                         Err(e) => {
@@ -156,8 +153,6 @@ impl<T: Send + Sync + Clone + 'static> PostgresStorage<T> {
     }
 }
 
-/// Extension trait for executing database operations with user-defined functions
-///
 /// Extension trait for executing database operations with user-defined functions
 pub trait PostgresStorageExt<T: Send + Sync + Clone + 'static> {
     /// Store data with a user-defined function

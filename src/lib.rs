@@ -9,6 +9,7 @@ pub mod config;
 pub mod connection;
 pub mod entity;
 pub mod error;
+pub use error::{AgentError, Result};
 #[cfg(feature = "process")]
 pub mod process;
 pub mod retry;

@@ -1,12 +1,13 @@
 use log::{debug, info, warn};
+use std::pin::Pin;
 use native_tls::{Certificate, Identity, TlsConnector};
 use postgres_native_tls::MakeTlsConnector;
 use std::fs;
 use std::path::Path;
+use anyhow::{Context, Result, anyhow};
 
 use crate::config::{DatabaseConfig, SslMode};
 use crate::connection::health::HealthCheck;
-use crate::prelude::{AgentError, Result};
 
 /// PostgreSQL connection provider
 pub struct PostgresProvider {
@@ -27,13 +28,13 @@ impl PostgresProvider {
         let client = pool
             .get()
             .await
-            .map_err(|e| AgentError::Connection(format!("Failed to connect to database: {}", e)))?;
+            .context("Failed to connect to database")?;
 
         // Test basic query
         client
             .execute("SELECT 1", &[])
             .await
-            .map_err(|e| AgentError::Database(format!("Failed to execute test query: {}", e)))?;
+            .context("Failed to execute test query")?;
 
         info!(
             "Successfully connected to PostgreSQL database: {}:{}/{}",
@@ -77,7 +78,7 @@ impl PostgresProvider {
         builder
             .max_size(10)
             .build()
-            .map_err(|e| AgentError::Connection(format!("Failed to create connection pool: {}", e)))
+            .context("Failed to create connection pool")
     }
 
     /// Get a client from the pool
@@ -85,7 +86,7 @@ impl PostgresProvider {
         self.pool
             .get()
             .await
-            .map_err(|e| AgentError::Connection(format!("Failed to get client from pool: {}", e)))
+            .context("Failed to get client from pool")
     }
 
     /// Execute a query with error handling
@@ -98,7 +99,7 @@ impl PostgresProvider {
         client
             .execute(sql, params)
             .await
-            .map_err(|e| AgentError::Database(format!("Query execution error: {}", e)))
+            .context("Query execution error")
     }
 
     /// Execute a query and get rows
@@ -111,7 +112,7 @@ impl PostgresProvider {
         client
             .query(sql, params)
             .await
-            .map_err(|e| AgentError::Database(format!("Query error: {}", e)))
+            .context("Query error")
     }
 
     /// Query for a single row
@@ -124,7 +125,7 @@ impl PostgresProvider {
         client
             .query_one(sql, params)
             .await
-            .map_err(|e| AgentError::Database(format!("Query one error: {}", e)))
+            .context("Query one error")
     }
 
     /// Query for an optional row
@@ -137,7 +138,7 @@ impl PostgresProvider {
         client
             .query_opt(sql, params)
             .await
-            .map_err(|e| AgentError::Database(format!("Query opt error: {}", e)))
+            .context("Query opt error")
     }
 
     /// Begin a transaction
@@ -145,16 +146,14 @@ impl PostgresProvider {
     where
         F: for<'a> FnOnce(
             &'a mut deadpool_postgres::Transaction<'_>,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<R>> + Send + 'a>,
-        >,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<R>> + Send + 'a>>,
         R: Send + 'static,
     {
         let mut client = self.get_client().await?;
         let mut tx = client
             .transaction()
             .await
-            .map_err(|e| AgentError::Database(format!("Failed to begin transaction: {}", e)))?;
+            .context("Failed to begin transaction")?;
 
         // Execute the function with the transaction
         let result = f(&mut tx).await?;
@@ -162,7 +161,7 @@ impl PostgresProvider {
         // Commit the transaction
         tx.commit()
             .await
-            .map_err(|e| AgentError::Database(format!("Failed to commit transaction: {}", e)))?;
+            .context("Failed to commit transaction")?;
 
         Ok(result)
     }
@@ -212,7 +211,7 @@ fn build_tls_connector(config: &DatabaseConfig) -> Result<TlsConnector> {
             let identity = load_identity(client_cert_path, client_key_path)?;
             builder.identity(identity);
         } else {
-            return Err(AgentError::Tls("Client key not provided".to_string()));
+            return Err(anyhow!("Client key not provided"));
         }
     }
 
@@ -226,20 +225,20 @@ fn build_tls_connector(config: &DatabaseConfig) -> Result<TlsConnector> {
         }
     }
 
-    builder.build().map_err(|e| AgentError::Tls(e.to_string()))
+    builder.build().context("Failed to build TLS connector")
 }
 
 /// Load a certificate from a file
 pub fn load_certificate<P: AsRef<Path>>(path: P) -> Result<Certificate> {
-    let cert_data = fs::read(path)?;
-    Certificate::from_pem(&cert_data).map_err(|e| AgentError::Tls(e.to_string()))
+    let cert_data = fs::read(path).context("Failed to read certificate file")?;
+    Certificate::from_pem(&cert_data).context("Invalid certificate format")
 }
 
 /// Load an identity from certificate and key files
 pub fn load_identity<P: AsRef<Path>>(cert_path: P, key_path: P) -> Result<Identity> {
-    let cert_data = fs::read(cert_path)?;
-    let key_data = fs::read(key_path)?;
-    Identity::from_pkcs8(&cert_data, &key_data).map_err(|e| AgentError::Tls(e.to_string()))
+    let cert_data = fs::read(cert_path).context("Failed to read certificate file")?;
+    let key_data = fs::read(key_path).context("Failed to read key file")?;
+    Identity::from_pkcs8(&cert_data, &key_data).context("Invalid certificate or key format")
 }
 
 /// Parse SSL mode from a string
@@ -251,6 +250,6 @@ pub fn parse_ssl_mode(s: &str) -> Result<SslMode> {
         "require" => Ok(SslMode::Require),
         "verify-ca" => Ok(SslMode::VerifyCa),
         "verify-full" => Ok(SslMode::VerifyFull),
-        _ => Err(AgentError::Config(format!("Invalid SSL mode: {}", s))),
+        _ => Err(anyhow!("Invalid SSL mode: {}", s)),
     }
 }

@@ -52,6 +52,7 @@ impl From<tokio::sync::mpsc::error::SendError<String>> for ProcessError {
     }
 }
 
+
 impl From<ProcessError> for crate::error::AgentError {
     fn from(err: ProcessError) -> Self {
         crate::error::AgentError::Collection(err.to_string())

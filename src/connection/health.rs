@@ -7,8 +7,7 @@ use std::sync::{
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::interval;
-
-use crate::error::Result;
+use anyhow::Result;
 
 /// Trait for health check functionality
 #[async_trait]

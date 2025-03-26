@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use super::config::CollectorConfig;
 use super::core::{Collector, MetricBatch, MetricType};
 use crate::error::Result;
@@ -32,6 +33,8 @@ where
     collect_fn: Arc<F>,
     /// Whether the collector is running
     running: Arc<RwLock<bool>>,
+    /// Phantom data to use the generic type T
+    _phantom: PhantomData<T>,
 }
 
 #[allow(dead_code)]
@@ -48,6 +51,7 @@ where
             config,
             collect_fn: Arc::new(collect_fn),
             running: Arc::new(RwLock::new(false)),
+            _phantom: PhantomData,
         }
     }
 }
