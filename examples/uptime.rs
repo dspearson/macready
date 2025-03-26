@@ -4,7 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use clap::Parser;
-use log::{debug, info, error};
+use log::{debug, error, info};
 use macready::collector::{Collector, CollectorConfig, MetricBatch, PeriodicCollector};
 use macready::config::{AgentConfig, load_config};
 use macready::error::AgentError;
@@ -230,7 +230,10 @@ async fn main() -> anyhow::Result<()> {
         // Initialize logger with default level for error reporting
         macready::init_logging(&macready::config::LogLevel::Error);
         error!("Configuration file not found: {}", args.config.display());
-        return Err(anyhow::anyhow!("Configuration file not found: {}", args.config.display()));
+        return Err(anyhow::anyhow!(
+            "Configuration file not found: {}",
+            args.config.display()
+        ));
     }
 
     // Load configuration from the specified file
@@ -253,16 +256,19 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting uptime metrics collector...");
 
     // Create storage
-    let storage = match PostgresStorage::<UptimeMetric>::new(config.connection.clone(), "uptime_metrics").await {
-        Ok(storage) => {
-            info!("Connected to PostgreSQL");
-            storage
-        }
-        Err(e) => {
-            error!("Failed to connect to PostgreSQL: {}", e);
-            return Err(e.into());
-        }
-    };
+    let storage =
+        match PostgresStorage::<UptimeMetric>::new(config.connection.clone(), "uptime_metrics")
+            .await
+        {
+            Ok(storage) => {
+                info!("Connected to PostgreSQL");
+                storage
+            }
+            Err(e) => {
+                error!("Failed to connect to PostgreSQL: {}", e);
+                return Err(e.into());
+            }
+        };
 
     // Create the uptime metrics table if it doesn't exist
     storage
@@ -286,10 +292,7 @@ async fn main() -> anyhow::Result<()> {
     let collector = UptimeCollector::new(storage, hostname, args.interval);
 
     // Start the collector
-    info!(
-        "Starting uptime collection every {} seconds",
-        args.interval
-    );
+    info!("Starting uptime collection every {} seconds", args.interval);
     let mut metrics_rx = collector.start().await?;
 
     // Wait for metrics indefinitely (or until error)
